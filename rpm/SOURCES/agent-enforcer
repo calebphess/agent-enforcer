@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-readonly AGENT_VERSION="0.2.1"
+readonly AGENT_VERSION="0.2.2"
 readonly AGENT_TYPE="ROCKY9"
 readonly CONFIG_FILE="/etc/agent-enforcer/config"
 readonly LICENSE_FILE="/var/lib/agent-enforcer/license"
