@@ -12,7 +12,8 @@ const API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:008971674866:secret
 const RPM_BUCKET = 'agent-enforcer-rpm';
 
 export interface DemoStackProps extends cdk.StackProps {
-  enforcementDistBucket: s3.Bucket;
+  // API Gateway base URL from AgentEnforcerStack — agents register and sync through this
+  apiEndpoint: string;
 }
 
 export class DemoStack extends cdk.Stack {
@@ -21,7 +22,7 @@ export class DemoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DemoStackProps) {
     super(scope, id, props);
 
-    const { enforcementDistBucket } = props;
+    const { apiEndpoint } = props;
 
     // Results bucket lives in DemoStack to avoid cross-stack S3 notification cycles
     const demoResultsBucket = new s3.Bucket(this, 'DemoResults', {
@@ -92,13 +93,13 @@ export class DemoStack extends cdk.Stack {
     const instanceRole = new iam.Role(this, 'DemoInstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
-        // SSM Session Manager for debugging without SSH
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
       ],
     });
     demoResultsBucket.grantWrite(instanceRole);
     demoResultsBucket.grantRead(instanceRole);
-    enforcementDistBucket.grantRead(instanceRole);
+    // Note: no direct dist bucket grant — enforced instance accesses configs via the license API
+    // which generates presigned URLs (presigned URLs carry their own embedded auth credentials)
     instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
       resources: [API_KEY_SECRET_ARN],
@@ -139,7 +140,6 @@ export class DemoStack extends cdk.Stack {
       'dnf install -y curl unzip tar python3 git',
       'dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm || true',
       'systemctl enable amazon-ssm-agent && systemctl start amazon-ssm-agent',
-      '',
       '',
       '# AWS CLI v2',
       'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip',
@@ -219,20 +219,25 @@ export class DemoStack extends cdk.Stack {
     cdk.Tags.of(controlInstance).add('Project', 'agent-enforcer-demo');
     controlInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    // Instance 2: enforced (installs RPM, configures agent enforcer)
+    // Instance 2: enforced (installs RPM, registers license, syncs via API)
     const enforcedSetup = [
       '',
       '# === AGENT ENFORCER SETUP ===',
       '',
-      '# Install awscli2 (needed by RPM service)',
-      '# Already installed above — install RPM',
+      '# Install RPM from agent-enforcer-rpm S3 bucket',
       `RPM_FILE=$(aws s3 ls "s3://${RPM_BUCKET}/" --recursive | grep "\\.rpm$" | sort | tail -1 | awk '{print $4}')`,
       `aws s3 cp "s3://${RPM_BUCKET}/$RPM_FILE" /tmp/agent-enforcer.rpm`,
       'rpm -ivh /tmp/agent-enforcer.rpm',
       '',
-      '# Configure with the enforcement dist bucket',
-      '# Use env PATH= to ensure /usr/local/bin/aws (installed by awscli v2 installer) is visible to sudo',
-      `sudo env PATH=$PATH agent-enforcer configure --bucket "${enforcementDistBucket.bucketName}" --region "${this.region}"`,
+      '# Register with the license API using instance ID as user_id',
+      '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',
+      `AGENT_ENFORCER_API="${apiEndpoint}"`,
+      'AGENT_VERSION=$(cat /usr/lib/agent-enforcer/version 2>/dev/null || echo "0.2.1")',
+      'sudo agent-enforcer register --no-prompt \\',
+      '  --user-id "$INSTANCE_ID" \\',
+      '  --agent-type "ROCKY9" \\',
+      `  --agent-version "$AGENT_VERSION" \\`,
+      '  --endpoint "$AGENT_ENFORCER_API"',
       '',
       '# Wait for initial sync to demo user home (agent syncs /home/*/.claude/)',
       'for i in $(seq 1 12); do',

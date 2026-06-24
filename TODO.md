@@ -1,5 +1,26 @@
 # TODO
 
+## 4. CI/CD — Automated Version Bumping and Testing
+
+**Status**: Workflows created at `.github/workflows/test.yml` and `.github/workflows/version-bump.yml`
+
+### What's wired up
+- `test.yml` — runs on every PR and push to main:
+  - Lambda unit tests (`pytest tests/lambda/test_license.py`)
+  - Agent bash tests (`bash tests/agent/test_agent.sh`)
+  - CDK synth validation
+  - Integration tests (manual trigger only via `workflow_dispatch` with `run_integration: true`)
+- `version-bump.yml` — runs on every push to main:
+  - Auto-bumps patch version in `VERSION`, spec, and agent script
+  - Commits back with `[skip ci]` prefix
+  - Use `[minor]` or `[major]` in commit message to bump those segments instead
+
+### Remaining for full CI/CD
+- **RPM build in CI**: the RPM currently requires an EC2 runner (`rpmbuild`, `systemd-rpm-macros`). Add a separate `build-rpm.yml` workflow that uses a Rocky Linux runner or Docker container to build the RPM on tag push or manual trigger
+- **Automated deploy**: add `deploy.yml` for `npx cdk deploy:enforcer` after tests pass on main (requires AWS credentials in GitHub secrets)
+- **Integration test environment**: currently integration tests (`tests/integration/`) don't exist yet — needs deployed stack and real API endpoint. Create stub at `tests/integration/test_integration.sh`
+- **GitHub secrets needed**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` for deploy + integration test workflows
+
 ## 1. Rename demo instance outputs to match logical names
 
 Current S3 keys (`instance1/`, `instance2/`) don't communicate intent. Rename to match the actual CDK logical IDs (`ControlInstance`, `EnforcedInstance`) or use clearer keys like `default/` and `enforced/`. Update the analysis Lambda, UserData upload paths, and `results.md` references consistently.

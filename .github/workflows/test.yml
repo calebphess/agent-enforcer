@@ -1,0 +1,80 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: 'Run integration tests (requires deployed AWS stack)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  lambda-tests:
+    name: Lambda unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install -r tests/lambda/requirements-test.txt
+
+      - name: Run lambda tests
+        run: python -m pytest tests/lambda/test_license.py -v
+
+  agent-tests:
+    name: Agent bash unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run agent tests
+        run: bash tests/agent/test_agent.sh
+
+  cdk-synth:
+    name: CDK synth validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install CDK dependencies
+        run: cd cdk && npm ci
+
+      - name: CDK synth (all stacks)
+        env:
+          CDK_DEFAULT_ACCOUNT: '123456789012'
+          CDK_DEFAULT_REGION: 'us-east-1'
+        run: cd cdk && npx cdk synth --all 2>&1 | tail -20
+
+  integration-tests:
+    name: Integration tests (deployed stack)
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_integration == 'true' }}
+    needs: [lambda-tests, agent-tests, cdk-synth]
+    environment: integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Run integration tests
+        run: bash tests/integration/test_integration.sh

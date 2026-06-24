@@ -1,41 +1,208 @@
 #!/bin/bash
 # /usr/bin/agent-enforcer
-# Agent Enforcer — AI Configuration Enforcement Agent
+# Agent Enforcer — AI Configuration Enforcement Agent v0.2.1
 #
-# Syncs AI tool configurations from a central S3 bucket and applies them
+# Syncs AI tool configurations from a central distribution API and applies them
 # to all user ~/.claude/ directories on this host.
 #
 # Usage:
-#   sudo agent-enforcer configure --bucket <name> [--region <region>]
+#   sudo agent-enforcer register [--endpoint <url>] [--user-id <id>]
+#                                [--old-license-id <id>] [--old-user-id <id>]
+#                                [--no-prompt]
+#   sudo agent-enforcer configure --endpoint <url>
 #   agent-enforcer status
 #   agent-enforcer sync
 #   agent-enforcer --daemon        (used by systemd service)
 
 set -euo pipefail
 
+readonly AGENT_VERSION="0.2.1"
+readonly AGENT_TYPE="ROCKY9"
 readonly CONFIG_FILE="/etc/agent-enforcer/config"
+readonly LICENSE_FILE="/var/lib/agent-enforcer/license"
 readonly STAGING_DIR="/tmp/agent-enforcer-staging"
 readonly STATE_DIR="/var/lib/agent-enforcer"
+readonly DEFAULT_ENDPOINT="https://alchemistfederal.com/agent-enforcer"
 
 usage() {
   cat >&2 <<'EOF'
 Usage: agent-enforcer <command> [options]
 
 Commands:
-  configure --bucket <name> [--region <region>]
-                    Configure enforcement bucket (requires sudo)
-  status            Show current configuration and last sync time
-  sync              Force an immediate sync from S3
-  --daemon          Run as a background daemon (used by systemd)
+  register              Register this agent with the enforcement API (requires sudo)
+    --endpoint <url>    API base URL (default: https://alchemistfederal.com/agent-enforcer)
+    --user-id <id>      Your user ID (email, username, or any unique string)
+    --old-license-id    Previous license ID (for transfers to a new host)
+    --old-user-id       User ID tied to the old license (required with --old-license-id)
+    --no-prompt         Non-interactive mode; --user-id becomes required
+
+  configure             Update the API endpoint without re-registering (requires sudo)
+    --endpoint <url>    New API base URL
+
+  status                Show current configuration and last sync time
+  sync                  Force an immediate sync from the enforcement API
+  --daemon              Run as a background daemon (used by systemd)
 
 Examples:
-  sudo agent-enforcer configure --bucket my-enforcement-bucket
-  sudo agent-enforcer configure --bucket my-bucket --region us-gov-west-1
+  sudo agent-enforcer register
+  sudo agent-enforcer register --no-prompt --user-id alice@example.com
+  sudo agent-enforcer register --no-prompt --user-id alice@example.com \
+    --old-license-id abc123-... --old-user-id alice@old-host.com
+  sudo agent-enforcer configure --endpoint https://alchemistfederal.com/agent-enforcer
   agent-enforcer status
   agent-enforcer sync
 EOF
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# register
+# ---------------------------------------------------------------------------
+
+cmd_register() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Error: 'register' requires sudo." >&2
+    exit 1
+  fi
+
+  local endpoint="$DEFAULT_ENDPOINT"
+  local user_id=""
+  local old_license_id=""
+  local old_user_id=""
+  local no_prompt=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --endpoint)       endpoint="$2";        shift 2 ;;
+      --user-id)        user_id="$2";         shift 2 ;;
+      --old-license-id) old_license_id="$2";  shift 2 ;;
+      --old-user-id)    old_user_id="$2";     shift 2 ;;
+      --no-prompt)      no_prompt=1;          shift ;;
+      --agent-type)     shift 2 ;;   # accepted but ignored — type is fixed to AGENT_TYPE
+      --agent-version)  shift 2 ;;   # accepted but ignored — version is from AGENT_VERSION
+      *) echo "Unknown option: $1" >&2; usage ;;
+    esac
+  done
+
+  if [[ $no_prompt -eq 1 ]]; then
+    if [[ -z "$user_id" ]]; then
+      echo "Error: --user-id is required when using --no-prompt." >&2
+      exit 1
+    fi
+  else
+    # Interactive prompts
+    echo "Agent Enforcer — Registration"
+    echo ""
+    read -rp "Enforcement API endpoint [${DEFAULT_ENDPOINT}]: " input_endpoint
+    [[ -n "$input_endpoint" ]] && endpoint="$input_endpoint"
+
+    read -rp "Your user ID (email or unique string): " input_user_id
+    user_id="${input_user_id:-}"
+    if [[ -z "$user_id" ]]; then
+      echo "Error: user ID is required." >&2
+      exit 1
+    fi
+
+    read -rp "Old license ID (leave blank for new registration): " input_old_license
+    old_license_id="${input_old_license:-}"
+    if [[ -n "$old_license_id" ]]; then
+      read -rp "Old user ID (the user_id tied to that license): " input_old_user
+      old_user_id="${input_old_user:-}"
+      if [[ -z "$old_user_id" ]]; then
+        echo "Error: old user ID is required when providing an old license ID." >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  local machine_id
+  machine_id=$(cat /etc/machine-id 2>/dev/null || hostname)
+
+  # Build JSON body
+  local body
+  body=$(printf '{"user_id":"%s","agent_type":"%s","agent_version":"%s","machine_id":"%s"' \
+    "$user_id" "$AGENT_TYPE" "$AGENT_VERSION" "$machine_id")
+  if [[ -n "$old_license_id" ]]; then
+    body="${body},\"old_license_id\":\"${old_license_id}\",\"old_user_id\":\"${old_user_id}\""
+  fi
+  body="${body}}"
+
+  echo "Registering with ${endpoint}..."
+
+  local http_code response_body tmp_response
+  tmp_response=$(mktemp)
+  http_code=$(curl -s -o "$tmp_response" -w "%{http_code}" \
+    -X POST "${endpoint}/register" \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+    --max-time 30 2>/dev/null) || {
+    rm -f "$tmp_response"
+    echo "Error: could not reach the enforcement API at ${endpoint}." >&2
+    echo "  Check your network connection and endpoint URL." >&2
+    exit 1
+  }
+  response_body=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+
+  if [[ "$http_code" != "200" ]]; then
+    local error_msg
+    error_msg=$(echo "$response_body" | grep -o '"error":"[^"]*"' | cut -d'"' -f4 || echo "Unknown error")
+    local detail_msg
+    detail_msg=$(echo "$response_body" | grep -o '"detail":"[^"]*"' | cut -d'"' -f4 || true)
+    echo "Error: registration failed (HTTP ${http_code})." >&2
+    echo "  ${error_msg}" >&2
+    [[ -n "$detail_msg" ]] && echo "  ${detail_msg}" >&2
+    exit 1
+  fi
+
+  # Parse license_id from JSON response (portable, no jq required)
+  local license_id
+  license_id=$(echo "$response_body" | grep -o '"license_id":"[^"]*"' | cut -d'"' -f4)
+  if [[ -z "$license_id" ]]; then
+    echo "Error: registration succeeded but no license_id in response." >&2
+    echo "  Response: ${response_body}" >&2
+    exit 1
+  fi
+
+  # Store license securely (root:root 600 — service runs as root)
+  mkdir -p "$STATE_DIR"
+  cat > "$LICENSE_FILE" <<EOF
+LICENSE_ID=${license_id}
+USER_ID=${user_id}
+MACHINE_ID=${machine_id}
+ENDPOINT=${endpoint}
+REGISTERED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  chmod 600 "$LICENSE_FILE"
+  chown root:root "$LICENSE_FILE"
+
+  # Write endpoint to config (for configure/status commands)
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  cat > "$CONFIG_FILE" <<EOF
+ENDPOINT=${endpoint}
+CONFIGURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  chmod 600 "$CONFIG_FILE"
+
+  echo ""
+  echo "============================================================"
+  echo "  Agent Enforcer — License Registered Successfully"
+  echo "============================================================"
+  echo "  License ID : ${license_id}"
+  echo "  User ID    : ${user_id}"
+  echo ""
+  echo "  IMPORTANT: Save these values. You will need them to"
+  echo "  transfer your license if you rebuild or migrate this host."
+  echo "============================================================"
+  echo ""
+
+  systemctl restart agent-enforcer 2>/dev/null || true
+  echo "Service restarted. Run 'agent-enforcer status' to verify."
+}
+
+# ---------------------------------------------------------------------------
+# configure
+# ---------------------------------------------------------------------------
 
 cmd_configure() {
   if [[ $EUID -ne 0 ]]; then
@@ -43,56 +210,81 @@ cmd_configure() {
     exit 1
   fi
 
-  # AWS CLI v2 installer puts the binary in /usr/local/bin which sudo may strip from PATH
-  AWS_BIN=$(command -v aws 2>/dev/null || echo "/usr/local/bin/aws")
-  if ! "$AWS_BIN" --version &>/dev/null; then
-    echo "Error: AWS CLI not found. Install AWS CLI v2: https://aws.amazon.com/cli/" >&2
-    exit 1
-  fi
-
-  local bucket="" region="us-east-1"
+  local endpoint=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --bucket) bucket="$2"; shift 2 ;;
-      --region) region="$2"; shift 2 ;;
+      --endpoint) endpoint="$2"; shift 2 ;;
       *) echo "Unknown option: $1" >&2; usage ;;
     esac
   done
 
-  if [[ -z "$bucket" ]]; then
-    echo "Error: --bucket <name> is required." >&2
+  if [[ -z "$endpoint" ]]; then
+    echo "Error: --endpoint <url> is required." >&2
     usage
   fi
 
-  mkdir -p /etc/agent-enforcer
+  mkdir -p "$(dirname "$CONFIG_FILE")"
   cat > "$CONFIG_FILE" <<EOF
-BUCKET_NAME=${bucket}
-REGION=${region}
+ENDPOINT=${endpoint}
 CONFIGURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   chmod 600 "$CONFIG_FILE"
 
+  # Update endpoint in license file if it exists
+  if [[ -f "$LICENSE_FILE" ]]; then
+    # Rewrite license file preserving all fields but updating ENDPOINT
+    local tmp_lic
+    tmp_lic=$(mktemp)
+    grep -v '^ENDPOINT=' "$LICENSE_FILE" > "$tmp_lic" || true
+    echo "ENDPOINT=${endpoint}" >> "$tmp_lic"
+    cp "$tmp_lic" "$LICENSE_FILE"
+    rm -f "$tmp_lic"
+    chmod 600 "$LICENSE_FILE"
+    chown root:root "$LICENSE_FILE"
+  fi
+
   echo "Agent Enforcer configured."
-  echo "  Bucket : ${bucket}"
-  echo "  Region : ${region}"
+  echo "  Endpoint : ${endpoint}"
   echo ""
-  systemctl restart agent-enforcer
+  systemctl restart agent-enforcer 2>/dev/null || true
   echo "Service restarted. Run 'agent-enforcer status' to verify."
 }
 
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
 cmd_status() {
-  if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Agent Enforcer is NOT configured."
-    echo "Run: sudo agent-enforcer configure --bucket <bucket-name>"
-    exit 0
+  echo "=== Agent Enforcer Status ==="
+  echo "  Version        : ${AGENT_VERSION}"
+  echo "  Agent Type     : ${AGENT_TYPE}"
+  echo ""
+
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+    echo "  Endpoint       : ${ENDPOINT:-<not set>}"
+    echo "  Configured at  : ${CONFIGURED_AT:-<unknown>}"
+  else
+    echo "  Endpoint       : <not configured>"
+    echo "  Run: sudo agent-enforcer configure --endpoint <url>"
   fi
 
-  echo "=== Agent Enforcer Status ==="
-  # shellcheck source=/dev/null
-  source "$CONFIG_FILE"
-  echo "  Bucket         : ${BUCKET_NAME}"
-  echo "  Region         : ${REGION}"
-  echo "  Configured at  : ${CONFIGURED_AT}"
+  echo ""
+
+  if [[ -f "$LICENSE_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$LICENSE_FILE"
+    echo "  License ID     : ${LICENSE_ID:-<unknown>}"
+    echo "  User ID        : ${USER_ID:-<unknown>}"
+    echo "  Machine ID     : ${MACHINE_ID:-<unknown>}"
+    echo "  Registered at  : ${REGISTERED_AT:-<unknown>}"
+  else
+    echo "  License        : NOT REGISTERED"
+    echo "  Run: sudo agent-enforcer register"
+  fi
+
+  echo ""
 
   if [[ -f "${STATE_DIR}/last-sync" ]]; then
     echo "  Last sync      : $(cat "${STATE_DIR}/last-sync")"
@@ -105,21 +297,98 @@ cmd_status() {
   echo "  Service        : ${svc_status}"
 }
 
+# ---------------------------------------------------------------------------
+# sync
+# ---------------------------------------------------------------------------
+
 do_sync() {
+  if [[ ! -f "$LICENSE_FILE" ]]; then
+    echo "$(date -u): agent not registered — skipping sync" >> "${STATE_DIR}/sync-errors.log"
+    return 0
+  fi
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "$(date -u): not configured — skipping sync" >> "${STATE_DIR}/sync-errors.log"
+    return 0
+  fi
+
+  # shellcheck source=/dev/null
+  source "$LICENSE_FILE"
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
 
-  mkdir -p "$STAGING_DIR" "$STATE_DIR"
+  local endpoint="${ENDPOINT:-$DEFAULT_ENDPOINT}"
+  local license_id="${LICENSE_ID:-}"
+  local machine_id="${MACHINE_ID:-}"
 
-  if ! aws s3 sync "s3://${BUCKET_NAME}/claude-code/latest/" "$STAGING_DIR/" \
-    --region "$REGION" --delete --quiet; then
-    echo "$(date -u): S3 sync failed" >> "${STATE_DIR}/sync-errors.log"
+  if [[ -z "$license_id" || -z "$machine_id" ]]; then
+    echo "$(date -u): license file is incomplete — re-register" >> "${STATE_DIR}/sync-errors.log"
     return 1
   fi
 
-  # Nothing synced yet (bucket may not have content)
+  # Call the sync endpoint to get presigned URLs
+  local tmp_resp
+  tmp_resp=$(mktemp)
+  local http_code
+  http_code=$(curl -s -o "$tmp_resp" -w "%{http_code}" \
+    -X POST "${endpoint}/sync" \
+    -H "Content-Type: application/json" \
+    -d "{\"license_id\":\"${license_id}\",\"machine_id\":\"${machine_id}\"}" \
+    --max-time 30 2>/dev/null) || {
+    rm -f "$tmp_resp"
+    echo "$(date -u): sync API unreachable — will retry next cycle" >> "${STATE_DIR}/sync-errors.log"
+    return 0  # soft failure — don't crash the daemon
+  }
+
+  local response_body
+  response_body=$(cat "$tmp_resp")
+  rm -f "$tmp_resp"
+
+  if [[ "$http_code" == "403" || "$http_code" == "401" ]]; then
+    echo "$(date -u): license invalid or inactive (HTTP ${http_code}) — re-register to continue" \
+      >> "${STATE_DIR}/sync-errors.log"
+    return 1
+  fi
+
+  if [[ "$http_code" != "200" ]]; then
+    echo "$(date -u): sync failed with HTTP ${http_code} — will retry next cycle" \
+      >> "${STATE_DIR}/sync-errors.log"
+    return 0  # treat unknown errors as transient
+  fi
+
+  # Download each file to staging — abort entirely if any download fails
+  mkdir -p "$STAGING_DIR" "$STATE_DIR"
+  rm -rf "${STAGING_DIR:?}"/*
+
+  # Parse {"files":{"path":"url",...}} — portable without jq
+  local download_ok=1
+  while IFS= read -r line; do
+    # Match lines like: "CLAUDE.md":"https://..."
+    if [[ "$line" =~ ^[[:space:]]*\"([^\"]+)\":[[:space:]]*\"(https://[^\"]+)\" ]]; then
+      local rel_path="${BASH_REMATCH[1]}"
+      local url="${BASH_REMATCH[2]}"
+
+      # Create parent dirs inside staging
+      local dest="${STAGING_DIR}/${rel_path}"
+      mkdir -p "$(dirname "$dest")"
+
+      if ! curl -sf -o "$dest" "$url" --max-time 60 2>/dev/null; then
+        echo "$(date -u): failed to download ${rel_path} — aborting sync" \
+          >> "${STATE_DIR}/sync-errors.log"
+        rm -rf "${STAGING_DIR:?}"/*
+        download_ok=0
+        break
+      fi
+    fi
+  done <<< "$response_body"
+
+  if [[ $download_ok -eq 0 ]]; then
+    return 1
+  fi
+
   if [[ -z "$(ls -A "$STAGING_DIR" 2>/dev/null)" ]]; then
-    echo "$(date -u): enforcement bucket has no content yet" >> "${STATE_DIR}/sync-errors.log"
+    echo "$(date -u): no files in distribution — enforcement doc may not have been uploaded yet" \
+      >> "${STATE_DIR}/sync-errors.log"
     return 0
   fi
 
@@ -129,14 +398,13 @@ do_sync() {
     mkdir -p "$claude_dir"
     cp -rp "$STAGING_DIR/." "$claude_dir/"
 
-    # Restore ownership to match the home directory
     local uid gid
     uid=$(stat -c '%u' "$home_dir" 2>/dev/null || echo "0")
     gid=$(stat -c '%g' "$home_dir" 2>/dev/null || echo "0")
     chown -R "${uid}:${gid}" "$claude_dir" 2>/dev/null || true
   done < <(find /home -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
 
-  # System-level managed settings for Claude Code (Linux path)
+  # System-level managed settings for Claude Code
   mkdir -p /etc/claude-code
   if [[ -f "${STAGING_DIR}/settings.json" ]]; then
     cp "${STAGING_DIR}/settings.json" /etc/claude-code/managed-settings.json
@@ -147,8 +415,14 @@ do_sync() {
 }
 
 cmd_sync() {
+  if [[ ! -f "$LICENSE_FILE" ]]; then
+    echo "Agent Enforcer is not registered." >&2
+    echo "Run: sudo agent-enforcer register" >&2
+    exit 1
+  fi
   if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Not configured. Run: sudo agent-enforcer configure --bucket <bucket-name>" >&2
+    echo "Agent Enforcer is not configured." >&2
+    echo "Run: sudo agent-enforcer configure --endpoint <url>" >&2
     exit 1
   fi
   echo "Running sync..."
@@ -157,10 +431,18 @@ cmd_sync() {
 
 cmd_daemon() {
   mkdir -p "$STATE_DIR"
-  echo "Agent Enforcer daemon started (PID $$)"
+  echo "Agent Enforcer daemon started (PID $$, version ${AGENT_VERSION})"
+
+  if [[ ! -f "$LICENSE_FILE" ]]; then
+    echo "Agent is not registered. Daemon will log this until registration is complete."
+    echo "Run: sudo agent-enforcer register"
+  fi
 
   while true; do
-    if [[ -f "$CONFIG_FILE" ]]; then
+    if [[ ! -f "$LICENSE_FILE" ]]; then
+      echo "$(date -u): not registered — run 'sudo agent-enforcer register'" \
+        >> "${STATE_DIR}/sync-errors.log"
+    elif [[ -f "$CONFIG_FILE" ]]; then
       do_sync 2>/dev/null || true
     fi
     sleep 900  # sync every 15 minutes
@@ -168,6 +450,7 @@ cmd_daemon() {
 }
 
 case "${1:-}" in
+  register)  shift; cmd_register "$@" ;;
   configure) shift; cmd_configure "$@" ;;
   status)    cmd_status ;;
   sync)      cmd_sync ;;
