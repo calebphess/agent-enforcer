@@ -1,0 +1,75 @@
+name: Auto Version Bump
+
+on:
+  push:
+    branches: [main]
+    # Don't run on version bump commits themselves
+    paths-ignore:
+      - 'VERSION'
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    name: Bump patch version
+    runs-on: ubuntu-latest
+    # Skip if the commit message already has [skip ci] or is a version bump
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !startsWith(github.event.head_commit.message, 'chore: bump version')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full git history and write access
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Determine version segment to bump
+        id: bump-type
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          if echo "$MSG" | grep -q '\[major\]'; then
+            echo "segment=major" >> $GITHUB_OUTPUT
+          elif echo "$MSG" | grep -q '\[minor\]'; then
+            echo "segment=minor" >> $GITHUB_OUTPUT
+          else
+            echo "segment=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        id: version
+        run: |
+          CURRENT=$(cat VERSION | tr -d '[:space:]')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          SEGMENT="${{ steps.bump-type.outputs.segment }}"
+          case "$SEGMENT" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "old_version=${CURRENT}" >> $GITHUB_OUTPUT
+          echo "Bumping ${CURRENT} -> ${NEW_VERSION} (${SEGMENT})"
+
+      - name: Update VERSION file
+        run: echo "${{ steps.version.outputs.new_version }}" > VERSION
+
+      - name: Update RPM spec Version field
+        run: |
+          NEW="${{ steps.version.outputs.new_version }}"
+          sed -i "s/^Version:.*$/Version:        ${NEW}/" rpm/SPECS/agent-enforcer.spec
+
+      - name: Update AGENT_VERSION in agent script
+        run: |
+          NEW="${{ steps.version.outputs.new_version }}"
+          sed -i "s/^readonly AGENT_VERSION=.*/readonly AGENT_VERSION=\"${NEW}\"/" rpm/SOURCES/agent-enforcer
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION rpm/SPECS/agent-enforcer.spec rpm/SOURCES/agent-enforcer
+          git commit -m "[skip ci] chore: bump version to ${{ steps.version.outputs.new_version }}"
+          git push

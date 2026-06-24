@@ -12,7 +12,8 @@ const API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:008971674866:secret
 const RPM_BUCKET = 'agent-enforcer-rpm';
 
 export interface DemoStackProps extends cdk.StackProps {
-  enforcementDistBucket: s3.Bucket;
+  // API Gateway base URL from AgentEnforcerStack — agents register and sync through this
+  apiEndpoint: string;
 }
 
 export class DemoStack extends cdk.Stack {
@@ -21,7 +22,7 @@ export class DemoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DemoStackProps) {
     super(scope, id, props);
 
-    const { enforcementDistBucket } = props;
+    const { apiEndpoint } = props;
 
     // Results bucket lives in DemoStack to avoid cross-stack S3 notification cycles
     const demoResultsBucket = new s3.Bucket(this, 'DemoResults', {
@@ -92,13 +93,13 @@ export class DemoStack extends cdk.Stack {
     const instanceRole = new iam.Role(this, 'DemoInstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
-        // SSM Session Manager for debugging without SSH
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
       ],
     });
     demoResultsBucket.grantWrite(instanceRole);
     demoResultsBucket.grantRead(instanceRole);
-    enforcementDistBucket.grantRead(instanceRole);
+    // Note: no direct dist bucket grant — enforced instance accesses configs via the license API
+    // which generates presigned URLs (presigned URLs carry their own embedded auth credentials)
     instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
       resources: [API_KEY_SECRET_ARN],
@@ -140,7 +141,6 @@ export class DemoStack extends cdk.Stack {
       'dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm || true',
       'systemctl enable amazon-ssm-agent && systemctl start amazon-ssm-agent',
       '',
-      '',
       '# AWS CLI v2',
       'curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip',
       'unzip -q /tmp/awscliv2.zip -d /tmp',
@@ -173,22 +173,31 @@ export class DemoStack extends cdk.Stack {
 
     const buildAndUpload = (instanceNum: number) => [
       '',
-      '# Run Claude Code as demo user (refuses --dangerously-skip-permissions as root)',
+      '# Run Claude Code as demo user — JSON output captures token usage',
       '# Retry up to 3 times on transient 500 errors',
       'for attempt in 1 2 3; do',
-      `  su -s /bin/bash demo -c "export ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY; cd /demo/project; claude -p \\"\\$(cat /demo/system-spec.md)\\" --dangerously-skip-permissions" > /demo/output/session.log 2>&1 && break`,
+      `  su -s /bin/bash demo -c "export ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY; cd /demo/project; claude -p \\"\\$(cat /demo/system-spec.md)\\" --output-format json --dangerously-skip-permissions" > /demo/output/session.json 2>/demo/output/session.log && break`,
       '  echo "Attempt $attempt failed, retrying in 30s..."',
       '  sleep 30',
       'done || true',
+      '',
+      '# Parse token usage from Claude Code JSON output',
+      "INPUT_TOKENS=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); u=d.get('usage',{}); print(u.get('input_tokens',0)+u.get('cache_read_input_tokens',0)+u.get('cache_creation_input_tokens',0))\" 2>/dev/null || echo 0)",
+      "OUTPUT_TOKENS=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); print(d.get('usage',{}).get('output_tokens',0))\" 2>/dev/null || echo 0)",
+      "COST_USD=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); print(d.get('total_cost_usd', d.get('cost_usd', 0)))\" 2>/dev/null || echo 0)",
       '',
       '# Capture summary stats',
       `echo "instance: ${instanceNum}" > /demo/output/meta.txt`,
       'echo "completed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /demo/output/meta.txt',
       'echo "files_created: $(find /demo/project -type f | wc -l)" >> /demo/output/meta.txt',
       'echo "total_lines: $(find /demo/project -type f -name \'*.py\' -exec wc -l {} + 2>/dev/null | tail -1)" >> /demo/output/meta.txt',
+      'echo "input_tokens: $INPUT_TOKENS" >> /demo/output/meta.txt',
+      'echo "output_tokens: $OUTPUT_TOKENS" >> /demo/output/meta.txt',
+      'echo "cost_usd: $COST_USD" >> /demo/output/meta.txt',
       '',
       '# Upload results to S3',
       `aws s3 sync /demo/project/ "s3://${demoResultsBucket.bucketName}/instance${instanceNum}/project/" --quiet`,
+      `aws s3 cp /demo/output/session.json "s3://${demoResultsBucket.bucketName}/instance${instanceNum}/session.json"`,
       `aws s3 cp /demo/output/session.log "s3://${demoResultsBucket.bucketName}/instance${instanceNum}/session.log"`,
       `aws s3 cp /demo/output/meta.txt "s3://${demoResultsBucket.bucketName}/instance${instanceNum}/meta.txt"`,
       '',
@@ -201,7 +210,7 @@ export class DemoStack extends cdk.Stack {
 
     // Instance 1: control (no agent enforcer)
     const ud1 = ec2.UserData.forLinux();
-    ud1.addCommands(baseSetup + buildAndUpload(1));
+    ud1.addCommands(baseSetup + '\n' + buildAndUpload(1));
 
     const controlInstance = new ec2.Instance(this, 'ControlInstance', {
       vpc,
@@ -219,20 +228,26 @@ export class DemoStack extends cdk.Stack {
     cdk.Tags.of(controlInstance).add('Project', 'agent-enforcer-demo');
     controlInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    // Instance 2: enforced (installs RPM, configures agent enforcer)
+    // Instance 2: enforced (installs RPM, registers license, syncs via API)
     const enforcedSetup = [
+      `# build: ${buildTimestamp}`,
       '',
       '# === AGENT ENFORCER SETUP ===',
       '',
-      '# Install awscli2 (needed by RPM service)',
-      '# Already installed above — install RPM',
+      '# Install RPM from agent-enforcer-rpm S3 bucket',
       `RPM_FILE=$(aws s3 ls "s3://${RPM_BUCKET}/" --recursive | grep "\\.rpm$" | sort | tail -1 | awk '{print $4}')`,
       `aws s3 cp "s3://${RPM_BUCKET}/$RPM_FILE" /tmp/agent-enforcer.rpm`,
       'rpm -ivh /tmp/agent-enforcer.rpm',
       '',
-      '# Configure with the enforcement dist bucket',
-      '# Use env PATH= to ensure /usr/local/bin/aws (installed by awscli v2 installer) is visible to sudo',
-      `sudo env PATH=$PATH agent-enforcer configure --bucket "${enforcementDistBucket.bucketName}" --region "${this.region}"`,
+      '# Register with the license API using instance ID as user_id',
+      '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',
+      `AGENT_ENFORCER_API="${apiEndpoint}agent-enforcer"`,
+      'AGENT_VERSION=$(cat /usr/lib/agent-enforcer/version 2>/dev/null || echo "0.2.1")',
+      'sudo agent-enforcer register --no-prompt \\',
+      '  --user-id "$INSTANCE_ID" \\',
+      '  --agent-type "ROCKY9" \\',
+      `  --agent-version "$AGENT_VERSION" \\`,
+      '  --endpoint "$AGENT_ENFORCER_API"',
       '',
       '# Wait for initial sync to demo user home (agent syncs /home/*/.claude/)',
       'for i in $(seq 1 12); do',
@@ -243,7 +258,7 @@ export class DemoStack extends cdk.Stack {
     ].join('\n');
 
     const ud2 = ec2.UserData.forLinux();
-    ud2.addCommands(baseSetup + enforcedSetup + buildAndUpload(2));
+    ud2.addCommands(baseSetup + '\n' + enforcedSetup + '\n' + buildAndUpload(2));
 
     const enforcedInstance = new ec2.Instance(this, 'EnforcedInstance', {
       vpc,

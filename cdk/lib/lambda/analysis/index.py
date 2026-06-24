@@ -44,6 +44,11 @@ def handler(event, context):
     metrics1 = _check_patterns(instance1_files)
     metrics2 = _check_patterns(instance2_files)
 
+    meta1 = _read_meta('instance1')
+    meta2 = _read_meta('instance2')
+    metrics1.update(_token_metrics(meta1, 'instance1'))
+    metrics2.update(_token_metrics(meta2, 'instance2'))
+
     analysis_text = _call_bedrock(instance1_files, instance2_files, metrics1, metrics2)
 
     results_md = _build_results_md(metrics1, metrics2, analysis_text)
@@ -74,6 +79,36 @@ def _read_project_files(instance_prefix: str) -> dict:
             except ClientError:
                 pass
     return files
+
+
+def _read_meta(instance_prefix: str) -> dict:
+    """Read meta.txt key:value pairs from an instance's S3 output."""
+    meta = {}
+    try:
+        resp = s3.get_object(Bucket=RESULTS_BUCKET, Key=f'{instance_prefix}/meta.txt')
+        for line in resp['Body'].read().decode('utf-8').splitlines():
+            if ':' in line:
+                key, _, val = line.partition(':')
+                meta[key.strip()] = val.strip()
+    except ClientError:
+        pass
+    return meta
+
+
+def _token_metrics(meta: dict, instance_prefix: str) -> dict:
+    """Extract token usage, preferring session.json for cost (total_cost_usd field)."""
+    cost = float(meta.get('cost_usd', 0.0))
+    try:
+        resp = s3.get_object(Bucket=RESULTS_BUCKET, Key=f'{instance_prefix}/session.json')
+        session = json.loads(resp['Body'].read())
+        cost = float(session.get('total_cost_usd', session.get('cost_usd', cost)))
+    except (ClientError, KeyError, ValueError):
+        pass
+    return {
+        'input_tokens': int(meta.get('input_tokens', 0)),
+        'output_tokens': int(meta.get('output_tokens', 0)),
+        'cost_usd': cost,
+    }
 
 
 def _check_patterns(files: dict) -> dict:
@@ -125,7 +160,11 @@ def _call_bedrock(files1: dict, files2: dict, metrics1: dict, metrics2: dict) ->
 Write a detailed results.md section (markdown) covering:
 1. **Coding Standard Compliance** — docstrings, type hints, code structure differences
 2. **Security Compliance** — SQL injection risk, secrets handling, container security
-3. **Token Efficiency** — analysis of code quality as a proxy for efficiency (well-planned code takes fewer iterations); note which instance likely used fewer tokens based on code completeness and structure
+3. **Token Cost Analysis** — Use these exact numbers:
+   - Control:  {metrics1['input_tokens']:,} input tokens / {metrics1['output_tokens']:,} output tokens / ${metrics1['cost_usd']:.4f}
+   - Enforced: {metrics2['input_tokens']:,} input tokens / {metrics2['output_tokens']:,} output tokens / ${metrics2['cost_usd']:.4f}
+
+   Frame the analysis around this key insight: **input tokens are cumulative** — each turn resends the full prior conversation, so a session with N turns accumulates far more input tokens than the prompt alone. The enforcement CLAUDE.md adds a **fixed per-turn overhead** (roughly the CLAUDE.md size × number of turns), which is one-time predictable cost. **Output tokens are the real scaling concern**: they compound — each turn's output becomes next turn's input, so output token count directly drives how fast input costs grow across a long session. At scale (e.g. 1,000 agent sessions/day), the output token delta between instances is the number that matters for budget forecasting. Calculate the implied cost per session at scale and the annual delta.
 4. **Summary Table** — winner per category
 5. **Overall Assessment** — 2-3 sentence verdict
 
@@ -149,6 +188,16 @@ def _build_results_md(metrics1: dict, metrics2: dict, analysis: str) -> str:
     def yn(val):
         return '✅ Yes' if val else '❌ No'
 
+    def fmt_tokens(n):
+        return f"{n:,}" if n else "—"
+
+    def fmt_cost(c):
+        return f"${c:.4f}" if c else "—"
+
+    output_delta = metrics2['output_tokens'] - metrics1['output_tokens']
+    output_delta_pct = (output_delta / metrics1['output_tokens'] * 100) if metrics1['output_tokens'] else 0
+    output_delta_str = f"+{output_delta:,} (+{output_delta_pct:.0f}%)" if output_delta > 0 else f"{output_delta:,}"
+
     return f"""# Agent Enforcer Demo Results
 
 > Generated automatically after both demo instances completed.
@@ -157,6 +206,9 @@ def _build_results_md(metrics1: dict, metrics2: dict, analysis: str) -> str:
 
 | Metric | Control (No Enforcer) | Enforced (Agent Enforcer) |
 |--------|----------------------|--------------------------|
+| Output tokens *(scaling concern)* | {fmt_tokens(metrics1['output_tokens'])} | {fmt_tokens(metrics2['output_tokens'])} ({output_delta_str}) |
+| Input tokens *(cumulative, all turns)* | {fmt_tokens(metrics1['input_tokens'])} | {fmt_tokens(metrics2['input_tokens'])} |
+| Total cost | {fmt_cost(metrics1['cost_usd'])} | {fmt_cost(metrics2['cost_usd'])} |
 | Files created | {metrics1['file_count']} | {metrics2['file_count']} |
 | Total lines of code | {metrics1['total_lines']} | {metrics2['total_lines']} |
 | Has docstrings | {yn(metrics1['has_docstrings'])} | {yn(metrics2['has_docstrings'])} |

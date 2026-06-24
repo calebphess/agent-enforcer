@@ -15,7 +15,7 @@ const env = {
 const enforcerStack = new AgentEnforcerStack(app, 'AgentEnforcerStack', { env });
 
 new DemoStack(app, 'DemoStack', {
-  enforcementDistBucket: enforcerStack.enforcementDistBucket,
+  apiEndpoint: enforcerStack.apiEndpoint,
   env,
 });
 
