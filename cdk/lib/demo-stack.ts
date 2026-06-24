@@ -231,7 +231,7 @@ export class DemoStack extends cdk.Stack {
       '',
       '# Register with the license API using instance ID as user_id',
       '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',
-      `AGENT_ENFORCER_API="${apiEndpoint}"`,
+      `AGENT_ENFORCER_API="${apiEndpoint}agent-enforcer"`,
       'AGENT_VERSION=$(cat /usr/lib/agent-enforcer/version 2>/dev/null || echo "0.2.1")',
       'sudo agent-enforcer register --no-prompt \\',
       '  --user-id "$INSTANCE_ID" \\',
