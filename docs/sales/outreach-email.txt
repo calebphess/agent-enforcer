@@ -1,0 +1,35 @@
+SUBJECT: Governing What Your AI Agents Are Allowed to Do
+
+TO: [Name], [Title]
+Office of the Chief AI Officer / Office of AI
+[Agency]
+
+---
+
+[Name],
+
+AI coding assistants are being deployed across federal development teams at a pace that's outrunning governance. I suspect your office is already fielding questions about it — how do you ensure these agents follow your security controls? Who's accountable when they don't?
+
+I'm Penn Hess, CEO of Alchemist. We built Agent Enforcer to answer exactly that question.
+
+Agent Enforcer is a lightweight system service that sits on every developer workstation and enforces your organization's security requirements, compliance controls, and coding standards on every AI coding session — automatically, at the system layer, before a single line of code is written. When a developer opens Claude Code, your policies are already active. They don't have to remember them. The AI can't ignore them.
+
+In controlled testing against the same AI model and the same task:
+— Unenforced sessions produced two critical security vulnerabilities (SQL injection, root container execution)
+— Enforced sessions produced zero
+
+The same test showed 20–35% reduction in token consumption on developer workloads, meaning the platform typically recovers its cost within the first year from efficiency gains alone — before the security value is counted.
+
+I'd welcome 30 minutes with you and the right technical stakeholders to walk through what we've built and understand where AI governance sits on your current priority list. I've attached a product overview and an initial partnership framework for context.
+
+Would [two specific date/time options] work, or is there a better time I should reach out to schedule?
+
+Penn Hess
+CEO, Alchemist
+[phone]
+[email]
+agent-enforcer.alchemist.ai
+
+ATTACHMENTS:
+— Agent Enforcer Product Overview (slicksheet.pdf)
+— Founding Partner Proposal (offer-letter.pdf)

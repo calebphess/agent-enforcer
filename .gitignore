@@ -1,0 +1,22 @@
+# CDK build artifacts
+cdk/cdk.out/
+cdk/node_modules/
+
+# RPM build output
+rpm/RPMS/
+rpm/SRPMS/
+rpm/BUILD/
+rpm/BUILDROOT/
+
+# Node
+node_modules/
+*.js.map
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS
+.DS_Store

@@ -1,0 +1,176 @@
+#!/bin/bash
+# /usr/bin/agent-enforcer
+# Agent Enforcer — AI Configuration Enforcement Agent
+#
+# Syncs AI tool configurations from a central S3 bucket and applies them
+# to all user ~/.claude/ directories on this host.
+#
+# Usage:
+#   sudo agent-enforcer configure --bucket <name> [--region <region>]
+#   agent-enforcer status
+#   agent-enforcer sync
+#   agent-enforcer --daemon        (used by systemd service)
+
+set -euo pipefail
+
+readonly CONFIG_FILE="/etc/agent-enforcer/config"
+readonly STAGING_DIR="/tmp/agent-enforcer-staging"
+readonly STATE_DIR="/var/lib/agent-enforcer"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: agent-enforcer <command> [options]
+
+Commands:
+  configure --bucket <name> [--region <region>]
+                    Configure enforcement bucket (requires sudo)
+  status            Show current configuration and last sync time
+  sync              Force an immediate sync from S3
+  --daemon          Run as a background daemon (used by systemd)
+
+Examples:
+  sudo agent-enforcer configure --bucket my-enforcement-bucket
+  sudo agent-enforcer configure --bucket my-bucket --region us-gov-west-1
+  agent-enforcer status
+  agent-enforcer sync
+EOF
+  exit 1
+}
+
+cmd_configure() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Error: 'configure' requires sudo." >&2
+    exit 1
+  fi
+
+  # AWS CLI v2 installer puts the binary in /usr/local/bin which sudo may strip from PATH
+  AWS_BIN=$(command -v aws 2>/dev/null || echo "/usr/local/bin/aws")
+  if ! "$AWS_BIN" --version &>/dev/null; then
+    echo "Error: AWS CLI not found. Install AWS CLI v2: https://aws.amazon.com/cli/" >&2
+    exit 1
+  fi
+
+  local bucket="" region="us-east-1"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bucket) bucket="$2"; shift 2 ;;
+      --region) region="$2"; shift 2 ;;
+      *) echo "Unknown option: $1" >&2; usage ;;
+    esac
+  done
+
+  if [[ -z "$bucket" ]]; then
+    echo "Error: --bucket <name> is required." >&2
+    usage
+  fi
+
+  mkdir -p /etc/agent-enforcer
+  cat > "$CONFIG_FILE" <<EOF
+BUCKET_NAME=${bucket}
+REGION=${region}
+CONFIGURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  chmod 600 "$CONFIG_FILE"
+
+  echo "Agent Enforcer configured."
+  echo "  Bucket : ${bucket}"
+  echo "  Region : ${region}"
+  echo ""
+  systemctl restart agent-enforcer
+  echo "Service restarted. Run 'agent-enforcer status' to verify."
+}
+
+cmd_status() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Agent Enforcer is NOT configured."
+    echo "Run: sudo agent-enforcer configure --bucket <bucket-name>"
+    exit 0
+  fi
+
+  echo "=== Agent Enforcer Status ==="
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+  echo "  Bucket         : ${BUCKET_NAME}"
+  echo "  Region         : ${REGION}"
+  echo "  Configured at  : ${CONFIGURED_AT}"
+
+  if [[ -f "${STATE_DIR}/last-sync" ]]; then
+    echo "  Last sync      : $(cat "${STATE_DIR}/last-sync")"
+  else
+    echo "  Last sync      : never"
+  fi
+
+  local svc_status
+  svc_status=$(systemctl is-active agent-enforcer 2>/dev/null || echo "unknown")
+  echo "  Service        : ${svc_status}"
+}
+
+do_sync() {
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+
+  mkdir -p "$STAGING_DIR" "$STATE_DIR"
+
+  if ! aws s3 sync "s3://${BUCKET_NAME}/claude-code/latest/" "$STAGING_DIR/" \
+    --region "$REGION" --delete --quiet; then
+    echo "$(date -u): S3 sync failed" >> "${STATE_DIR}/sync-errors.log"
+    return 1
+  fi
+
+  # Nothing synced yet (bucket may not have content)
+  if [[ -z "$(ls -A "$STAGING_DIR" 2>/dev/null)" ]]; then
+    echo "$(date -u): enforcement bucket has no content yet" >> "${STATE_DIR}/sync-errors.log"
+    return 0
+  fi
+
+  # Apply to each non-system user home directory
+  while IFS= read -r -d '' home_dir; do
+    local claude_dir="${home_dir}/.claude"
+    mkdir -p "$claude_dir"
+    cp -rp "$STAGING_DIR/." "$claude_dir/"
+
+    # Restore ownership to match the home directory
+    local uid gid
+    uid=$(stat -c '%u' "$home_dir" 2>/dev/null || echo "0")
+    gid=$(stat -c '%g' "$home_dir" 2>/dev/null || echo "0")
+    chown -R "${uid}:${gid}" "$claude_dir" 2>/dev/null || true
+  done < <(find /home -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
+
+  # System-level managed settings for Claude Code (Linux path)
+  mkdir -p /etc/claude-code
+  if [[ -f "${STAGING_DIR}/settings.json" ]]; then
+    cp "${STAGING_DIR}/settings.json" /etc/claude-code/managed-settings.json
+  fi
+
+  date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/last-sync"
+  echo "$(date -u): sync complete" >> "${STATE_DIR}/sync.log"
+}
+
+cmd_sync() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Not configured. Run: sudo agent-enforcer configure --bucket <bucket-name>" >&2
+    exit 1
+  fi
+  echo "Running sync..."
+  do_sync && echo "Sync complete." || echo "Sync failed — check ${STATE_DIR}/sync-errors.log" >&2
+}
+
+cmd_daemon() {
+  mkdir -p "$STATE_DIR"
+  echo "Agent Enforcer daemon started (PID $$)"
+
+  while true; do
+    if [[ -f "$CONFIG_FILE" ]]; then
+      do_sync 2>/dev/null || true
+    fi
+    sleep 900  # sync every 15 minutes
+  done
+}
+
+case "${1:-}" in
+  configure) shift; cmd_configure "$@" ;;
+  status)    cmd_status ;;
+  sync)      cmd_sync ;;
+  --daemon)  cmd_daemon ;;
+  *)         usage ;;
+esac

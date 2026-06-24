@@ -1,0 +1,25 @@
+{
+  "name": "agent-enforcer-cdk",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "synth": "npx cdk synth",
+    "deploy:enforcer": "npx cdk deploy AgentEnforcerStack",
+    "deploy:demo": "npx cdk deploy DemoStack",
+    "build:rpm": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s)",
+    "build:rpm:custom": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s) --context builderAmi=${AMI_ID}",
+    "deploy:all": "npx cdk deploy --all --require-approval never",
+    "destroy:all": "npx cdk destroy --all --force"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.7"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.x",
+    "constructs": "^10.0.0",
+    "source-map-support": "^0.5.21"
+  }
+}

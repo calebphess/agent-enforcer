@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Enforcer — AI Configuration Enforcement Agent
+Documentation=https://github.com/your-org/agent-enforcer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/agent-enforcer --daemon
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-enforcer
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=no
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target
