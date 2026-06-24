@@ -155,9 +155,9 @@ cmd_register() {
     exit 1
   fi
 
-  # Parse license_id from JSON response (portable, no jq required)
+  # Parse license_id from JSON response
   local license_id
-  license_id=$(echo "$response_body" | grep -o '"license_id":"[^"]*"' | cut -d'"' -f4)
+  license_id=$(echo "$response_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('license_id',''))" 2>/dev/null || true)
   if [[ -z "$license_id" ]]; then
     echo "Error: registration succeeded but no license_id in response." >&2
     echo "  Response: ${response_body}" >&2
@@ -360,27 +360,28 @@ do_sync() {
   mkdir -p "$STAGING_DIR" "$STATE_DIR"
   rm -rf "${STAGING_DIR:?}"/*
 
-  # Parse {"files":{"path":"url",...}} — portable without jq
+  # Parse {"files":{"path":"url",...}} using python3
   local download_ok=1
-  while IFS= read -r line; do
-    # Match lines like: "CLAUDE.md":"https://..."
-    if [[ "$line" =~ ^[[:space:]]*\"([^\"]+)\":[[:space:]]*\"(https://[^\"]+)\" ]]; then
-      local rel_path="${BASH_REMATCH[1]}"
-      local url="${BASH_REMATCH[2]}"
+  while IFS=$'\t' read -r rel_path url; do
+    [[ -z "$rel_path" || -z "$url" ]] && continue
 
-      # Create parent dirs inside staging
-      local dest="${STAGING_DIR}/${rel_path}"
-      mkdir -p "$(dirname "$dest")"
+    # Create parent dirs inside staging
+    local dest="${STAGING_DIR}/${rel_path}"
+    mkdir -p "$(dirname "$dest")"
 
-      if ! curl -sf -o "$dest" "$url" --max-time 60 2>/dev/null; then
-        echo "$(date -u): failed to download ${rel_path} — aborting sync" \
-          >> "${STATE_DIR}/sync-errors.log"
-        rm -rf "${STAGING_DIR:?}"/*
-        download_ok=0
-        break
-      fi
+    if ! curl -sf -o "$dest" "$url" --max-time 60 2>/dev/null; then
+      echo "$(date -u): failed to download ${rel_path} — aborting sync" \
+        >> "${STATE_DIR}/sync-errors.log"
+      rm -rf "${STAGING_DIR:?}"/*
+      download_ok=0
+      break
     fi
-  done <<< "$response_body"
+  done < <(echo "$response_body" | python3 -c "
+import sys, json
+d = json.load(sys.stdin).get('files', {})
+for path, url in d.items():
+    print(path + '\t' + url)
+" 2>/dev/null || true)
 
   if [[ $download_ok -eq 0 ]]; then
     return 1

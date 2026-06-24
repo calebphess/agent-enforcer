@@ -260,5 +260,5 @@ def _resp(status: int, body: dict) -> dict:
     return {
         'statusCode': status,
         'headers': {'Content-Type': 'application/json'},
-        'body': json.dumps(body),
+        'body': json.dumps(body, separators=(',', ':')),
     }
