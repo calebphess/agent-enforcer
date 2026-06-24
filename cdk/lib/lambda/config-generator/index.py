@@ -34,44 +34,75 @@ bedrock = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION
 DIST_BUCKET = os.environ['DIST_BUCKET']
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
 
-SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into Claude Code configuration bundles.
+SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into efficient Claude Code configuration bundles.
 
-Given one or more enforcement documents, generate a JSON object that defines the complete .claude/ directory:
+## How Claude Code loads configuration — read this carefully
+
+- **CLAUDE.md** is injected into the system prompt on EVERY turn of EVERY session. Every word costs tokens on every API call. It must be under 200 words.
+- **Skills** (`.claude/skills/<name>.md`) are loaded ONLY when invoked. They are the right place for detailed, domain-specific rule sets. Reference them from CLAUDE.md with trigger lines.
+- **Commands** (`.claude/commands/<name>.md`) are user-invoked slash commands. Use for audit/check workflows a developer explicitly triggers.
+- **settings.json** controls Claude Code behavior flags (permissions, env vars, hooks).
+
+## Allocation rules — follow exactly
+
+**CLAUDE.md** contains TWO things only:
+1. A short header (1–2 sentences about the enforcement policy)
+2. One trigger line per skill, telling Claude when to load it
+
+CLAUDE.md must be under 100 words total. It does NOT contain the actual rules — those live in skills.
+
+**WRONG** (do not do this):
+```
+CLAUDE.md:
+You MUST use parameterized queries for all SQL...
+You MUST run Dockerfiles as non-root...
+When writing SQL, invoke the `sql-safety` skill.
+```
+
+**RIGHT** (the rules belong only in the skill, not in CLAUDE.md too):
+```
+CLAUDE.md:
+You are operating under enterprise coding and security enforcement. Follow these standards:
+- When writing or editing any code, invoke the `python-standards` skill first.
+- When writing SQL or database code, invoke the `sql-safety` skill.
+- When writing a Dockerfile or container config, invoke the `container-security` skill.
+```
+
+**Skills** contain the actual rules — verbose, detailed, domain-specific. They are only loaded when Claude invokes them based on the trigger in CLAUDE.md. Each skill should be comprehensive for its domain.
+
+**Commands** are user-triggered slash commands for audit/review workflows (e.g., "audit my code against standards"). Create one command that covers the full compliance check across all skills.
+
+## Skill trigger syntax
+
+Triggers in CLAUDE.md follow this pattern:
+  When [condition], invoke the `skill-name` skill.
+
+Good trigger conditions:
+  "when writing or editing any code"
+  "when writing SQL queries or database access code"
+  "when creating or modifying a Dockerfile or container configuration"
+  "when creating a new Python module or file"
+
+## Output format
+
+Return a single JSON object. No markdown fencing, no prose outside the JSON.
 
 {
   "files": {
-    "CLAUDE.md": "<combined mandatory instructions — all rules rewritten in imperative 'You MUST/NEVER' language that Claude will follow every session>",
-    "settings.json": "<Claude Code settings JSON string — use {} if no specific settings are warranted>",
-    "skills/NAME.md": "<a reusable skill — only include if the enforcement docs define a distinct repeatable behavior worth encapsulating as a skill>",
-    "commands/NAME.md": "<a slash command — only include if there is a clear audit or check workflow a developer would want to invoke on-demand>"
+    "CLAUDE.md": "<under 100 words; header sentence + one trigger line per skill only — NO actual rules>",
+    "settings.json": <JSON object — not a string; use {} if nothing specific is needed>,
+    "skills/NAME.md": "<all the actual rules for this domain; self-contained; one-line description at top>",
+    "commands/NAME.md": "<user-invokable audit workflow covering all skills; one-line description at top>"
   },
   "version": "<YYYY-MM-DD>"
 }
 
-## What belongs where
-
-**CLAUDE.md** — Everything Claude must always do or never do. Combine ALL rules from ALL documents into one comprehensive, non-redundant instruction set. Write in second person imperative: "You MUST...", "NEVER...".
-
-**settings.json** — Only Claude Code-compatible keys. Valid examples: `{"env": {"ENFORCE_STANDARDS": "1"}}`. Use `{}` if nothing specific is needed. Must be valid JSON (not a string).
-
-**skills/** — Create a skill file when the docs define a substantial, reusable behavior that is best invoked on-demand rather than always-on. Examples:
-  - `skills/sql-safety-check.md` — if docs have detailed SQL injection prevention rules
-  - `skills/docstring-enforcer.md` — if docs mandate a specific documentation format
-  - `skills/container-security-audit.md` — if docs have container hardening rules
-  Name skills descriptively (kebab-case). Don't create trivial skills for one-liners.
-
-**commands/** — Create a slash command when docs imply a workflow a dev would want to run interactively. Examples:
-  - `commands/compliance-check.md` — audit current file against all standards
-  - `commands/security-review.md` — dedicated security pass
-  - `commands/add-docstrings.md` — retrofit missing docstrings
-  Name commands as actions (kebab-case verbs).
-
-## Rules
+## Constraints
 - Return ONLY valid JSON. No markdown fencing, no prose outside the JSON.
-- Merge overlapping rules from multiple documents — do not repeat the same rule.
-- CLAUDE.md must be comprehensive enough to stand alone as the complete rule set.
-- settings.json value must be a JSON object (not a string).
-- Each skill/command file should be self-contained with a clear description at the top."""
+- CLAUDE.md must be under 100 words and contain NO actual rules — only triggers.
+- Merge overlapping rules across documents into skills — no repetition.
+- settings.json must be a JSON object (not a string).
+- Skills are self-contained — a developer can read them without seeing CLAUDE.md."""
 
 
 def handler(event, context):
@@ -156,8 +187,22 @@ def _call_bedrock(docs: dict) -> dict:
     return json.loads(raw_text)
 
 
+def _clear_latest(bucket: str) -> None:
+    """Delete all existing objects under claude-code/latest/ before writing a new bundle."""
+    paginator = s3.get_paginator('list_objects_v2')
+    to_delete = []
+    for page in paginator.paginate(Bucket=bucket, Prefix='claude-code/latest/'):
+        for obj in page.get('Contents', []):
+            to_delete.append({'Key': obj['Key']})
+    if to_delete:
+        s3.delete_objects(Bucket=bucket, Delete={'Objects': to_delete})
+        print(f"  Cleared {len(to_delete)} stale object(s) from claude-code/latest/")
+
+
 def _write_bundle(files: dict, version: str) -> None:
-    """Write each generated file to both versioned and latest paths in dist bucket."""
+    """Clear latest/, then write each generated file to both versioned and latest paths."""
+    _clear_latest(DIST_BUCKET)
+
     for file_path, file_content in files.items():
         if isinstance(file_content, dict):
             content_bytes = json.dumps(file_content, indent=2).encode('utf-8')

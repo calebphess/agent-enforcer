@@ -144,7 +144,7 @@ export class AgentEnforcerStack extends cdk.Stack {
     });
 
     sourceBucket.grantRead(configGeneratorFn);
-    distBucket.grantWrite(configGeneratorFn);
+    distBucket.grantReadWrite(configGeneratorFn);
     // Cross-region inference profiles route across multiple AWS regions,
     // so the resource must be '*' — there's no single-region ARN to scope to.
     configGeneratorFn.addToRolePolicy(new iam.PolicyStatement({

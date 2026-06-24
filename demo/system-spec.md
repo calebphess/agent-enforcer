@@ -1,52 +1,55 @@
-# System Specification: Task Manager API v1
+# System Specification: Server Log Analyzer
 
 ## Overview
 
-Build a Python REST API for a simple task management system. This specification is intentionally concise — implement sensible defaults and best practices for anything not explicitly specified.
+Build a Python CLI tool that ingests web server access logs, stores them in a local database, and answers queries against them. Implement sensible defaults and best practices for anything not explicitly specified.
 
-## API Endpoints
+## Commands
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /tasks | Create a new task |
-| GET | /tasks | List all tasks |
-| GET | /tasks/{id} | Get a specific task |
-| PUT | /tasks/{id} | Update a task |
-| DELETE | /tasks/{id} | Delete a task |
+The tool is invoked as `loganalyzer <command> [options]`.
 
-## Data Model
+| Command | Description |
+|---------|-------------|
+| `import <file>` | Parse a log file and store entries in the database |
+| `query` | Filter and display log entries |
+| `report` | Print a summary report of all stored data |
 
-Each task has:
-- `id` — integer, auto-increment primary key
-- `title` — string, required, max 200 characters
-- `description` — string, optional
-- `status` — string, one of: `pending`, `in_progress`, `done` (default: `pending`)
-- `created_at` — ISO 8601 UTC timestamp, set on creation
-- `updated_at` — ISO 8601 UTC timestamp, updated on every change
+## Log Format
+
+Support the two most common web server log formats:
+
+- **Common Log Format**: `host ident authuser [date] "request" status bytes`
+- **Combined Log Format**: Common + `"referer" "user_agent"` appended
+
+Auto-detect which format is in use. Lines that cannot be parsed should be counted and reported as a warning at the end of import, not silently skipped.
+
+## Query Options
+
+The `query` command accepts optional filters. Support filtering by: IP address, HTTP status code, date range, and request path substring. Results print to stdout, one entry per line. Support `--limit N` to cap output. Design the filter interface yourself.
+
+## Report Contents
+
+The `report` command prints to stdout:
+
+- Total requests stored
+- Date range of stored data
+- Top 10 IP addresses by request count
+- Request counts broken down by HTTP status code
+- Top 10 requested paths
 
 ## Technical Requirements
 
-- **Framework**: Python with Flask
-- **Database**: SQLite (file: `tasks.db` in the working directory)
-- **Response format**: JSON for all responses
-- **Status codes**: Use standard REST conventions (200, 201, 400, 404, 500)
-- **Validation**: `title` required on create; `status` must be a valid value if provided
-- **Containerization**: Include a `Dockerfile` for deployment
+- **Language**: Python 3.12
+- **Database**: SQLite (file: `logs.db` in the working directory)
+- **Containerization**: Include a `Dockerfile`
+- **Entry point**: `loganalyzer` command (use a `console_scripts` entry point or a simple wrapper)
 
 ## Deliverables
 
-Create all files in the current directory. Final structure should be:
-
-```
-├── app.py          — Flask application, route definitions
-├── database.py     — Database initialization and query functions
-├── requirements.txt — Pinned Python dependencies
-├── Dockerfile      — Container definition
-└── README.md       — Setup and usage instructions
-```
+Decide your own module structure. The spec does not prescribe file names — choose an architecture that separates concerns cleanly. Include a `README.md` with: how to install and run locally, how to run via Docker, and example commands for each of the three subcommands.
 
 ## Notes
 
-- The README should include: how to run locally, how to run via Docker, and example curl commands for each endpoint
-- Error responses should be JSON: `{"error": "message"}`
-- Success responses for lists should be JSON arrays; for single resources, JSON objects
+- The database should be created automatically on first run
+- Import should be idempotent where possible — re-importing the same file should not create duplicates
+- All user-facing errors should be plain-language messages, not Python tracebacks

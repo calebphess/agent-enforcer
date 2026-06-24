@@ -263,7 +263,8 @@ STATUS=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" status 2>&1)
 assert_contains "status shows endpoint" "test.example.com" "$STATUS"
 assert_contains "status shows license id" "abc-123-def-456" "$STATUS"
 assert_contains "status shows user id" "status-test@example.com" "$STATUS"
-assert_contains "status shows version" "0.2.1" "$STATUS"
+EXPECTED_VERSION=$(grep '^readonly AGENT_VERSION=' "$AGENT_SCRIPT" | cut -d'"' -f2)
+assert_contains "status shows version" "$EXPECTED_VERSION" "$STATUS"
 
 # ---------------------------------------------------------------------------
 # Summary
