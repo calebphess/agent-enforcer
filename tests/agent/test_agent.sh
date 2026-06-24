@@ -56,8 +56,8 @@ assert_file_exists() {
 assert_file_perm() {
   local label="$1" path="$2" expected_perm="$3"
   local actual_perm
-  # macOS: stat -f "%OLp" | Linux: stat -c "%a"
-  actual_perm=$(stat -f "%OLp" "$path" 2>/dev/null || stat -c "%a" "$path" 2>/dev/null || echo "unknown")
+  # Linux: stat -c "%a" | macOS: stat -f "%OLp"
+  actual_perm=$(stat -c "%a" "$path" 2>/dev/null || stat -f "%OLp" "$path" 2>/dev/null || echo "unknown")
   if [[ "$actual_perm" == "$expected_perm" ]]; then
     _pass "$label"
   else
