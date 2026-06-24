@@ -201,7 +201,7 @@ export class DemoStack extends cdk.Stack {
 
     // Instance 1: control (no agent enforcer)
     const ud1 = ec2.UserData.forLinux();
-    ud1.addCommands(baseSetup + buildAndUpload(1));
+    ud1.addCommands(baseSetup + '\n' + buildAndUpload(1));
 
     const controlInstance = new ec2.Instance(this, 'ControlInstance', {
       vpc,
@@ -221,7 +221,7 @@ export class DemoStack extends cdk.Stack {
 
     // Instance 2: enforced (installs RPM, registers license, syncs via API)
     const enforcedSetup = [
-      `# build: ${Date.now()}`,
+      `# build: ${buildTimestamp}`,
       '',
       '# === AGENT ENFORCER SETUP ===',
       '',
@@ -249,7 +249,7 @@ export class DemoStack extends cdk.Stack {
     ].join('\n');
 
     const ud2 = ec2.UserData.forLinux();
-    ud2.addCommands(baseSetup + enforcedSetup + buildAndUpload(2));
+    ud2.addCommands(baseSetup + '\n' + enforcedSetup + '\n' + buildAndUpload(2));
 
     const enforcedInstance = new ec2.Instance(this, 'EnforcedInstance', {
       vpc,
