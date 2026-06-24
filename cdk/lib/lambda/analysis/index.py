@@ -44,6 +44,11 @@ def handler(event, context):
     metrics1 = _check_patterns(instance1_files)
     metrics2 = _check_patterns(instance2_files)
 
+    meta1 = _read_meta('instance1')
+    meta2 = _read_meta('instance2')
+    metrics1.update(_token_metrics(meta1))
+    metrics2.update(_token_metrics(meta2))
+
     analysis_text = _call_bedrock(instance1_files, instance2_files, metrics1, metrics2)
 
     results_md = _build_results_md(metrics1, metrics2, analysis_text)
@@ -74,6 +79,29 @@ def _read_project_files(instance_prefix: str) -> dict:
             except ClientError:
                 pass
     return files
+
+
+def _read_meta(instance_prefix: str) -> dict:
+    """Read meta.txt key:value pairs from an instance's S3 output."""
+    meta = {}
+    try:
+        resp = s3.get_object(Bucket=RESULTS_BUCKET, Key=f'{instance_prefix}/meta.txt')
+        for line in resp['Body'].read().decode('utf-8').splitlines():
+            if ':' in line:
+                key, _, val = line.partition(':')
+                meta[key.strip()] = val.strip()
+    except ClientError:
+        pass
+    return meta
+
+
+def _token_metrics(meta: dict) -> dict:
+    """Extract token usage fields from parsed meta.txt."""
+    return {
+        'input_tokens': int(meta.get('input_tokens', 0)),
+        'output_tokens': int(meta.get('output_tokens', 0)),
+        'cost_usd': float(meta.get('cost_usd', 0.0)),
+    }
 
 
 def _check_patterns(files: dict) -> dict:
@@ -125,7 +153,7 @@ def _call_bedrock(files1: dict, files2: dict, metrics1: dict, metrics2: dict) ->
 Write a detailed results.md section (markdown) covering:
 1. **Coding Standard Compliance** — docstrings, type hints, code structure differences
 2. **Security Compliance** — SQL injection risk, secrets handling, container security
-3. **Token Efficiency** — analysis of code quality as a proxy for efficiency (well-planned code takes fewer iterations); note which instance likely used fewer tokens based on code completeness and structure
+3. **Token Efficiency** — Instance 1 used {metrics1['input_tokens']:,} input / {metrics1['output_tokens']:,} output tokens (${metrics1['cost_usd']:.4f}). Instance 2 used {metrics2['input_tokens']:,} input / {metrics2['output_tokens']:,} output tokens (${metrics2['cost_usd']:.4f}). Explain what the difference means in terms of iteration count, planning overhead, and cost at scale (e.g. if running 1,000 agents/day).
 4. **Summary Table** — winner per category
 5. **Overall Assessment** — 2-3 sentence verdict
 
@@ -149,6 +177,12 @@ def _build_results_md(metrics1: dict, metrics2: dict, analysis: str) -> str:
     def yn(val):
         return '✅ Yes' if val else '❌ No'
 
+    def fmt_tokens(n):
+        return f"{n:,}" if n else "—"
+
+    def fmt_cost(c):
+        return f"${c:.4f}" if c else "—"
+
     return f"""# Agent Enforcer Demo Results
 
 > Generated automatically after both demo instances completed.
@@ -157,6 +191,9 @@ def _build_results_md(metrics1: dict, metrics2: dict, analysis: str) -> str:
 
 | Metric | Control (No Enforcer) | Enforced (Agent Enforcer) |
 |--------|----------------------|--------------------------|
+| Input tokens | {fmt_tokens(metrics1['input_tokens'])} | {fmt_tokens(metrics2['input_tokens'])} |
+| Output tokens | {fmt_tokens(metrics1['output_tokens'])} | {fmt_tokens(metrics2['output_tokens'])} |
+| Total cost | {fmt_cost(metrics1['cost_usd'])} | {fmt_cost(metrics2['cost_usd'])} |
 | Files created | {metrics1['file_count']} | {metrics2['file_count']} |
 | Total lines of code | {metrics1['total_lines']} | {metrics2['total_lines']} |
 | Has docstrings | {yn(metrics1['has_docstrings'])} | {yn(metrics2['has_docstrings'])} |
