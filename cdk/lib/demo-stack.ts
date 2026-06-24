@@ -221,6 +221,7 @@ export class DemoStack extends cdk.Stack {
 
     // Instance 2: enforced (installs RPM, registers license, syncs via API)
     const enforcedSetup = [
+      `# build: ${Date.now()}`,
       '',
       '# === AGENT ENFORCER SETUP ===',
       '',

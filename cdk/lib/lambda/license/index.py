@@ -91,7 +91,7 @@ def _register_new(user_id, agent_type, agent_version, machine_id, new_license_id
         counter_resp = table.update_item(
             Key={'license_id': 'COUNTER'},
             UpdateExpression='ADD active_count :one, total_count :one',
-            ConditionExpression='active_count < :max',
+            ConditionExpression='attribute_not_exists(active_count) OR active_count < :max',
             ExpressionAttributeValues={':one': 1, ':max': max_licenses},
             ReturnValues='UPDATED_NEW',
         )
