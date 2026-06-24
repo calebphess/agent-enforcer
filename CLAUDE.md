@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workflow — Required Before Any Work
+
+**Before starting any task in this repository, always:**
+
+1. `git checkout main && git pull origin main` — get latest
+2. `git checkout -b <short-descriptive-branch-name>` — create a feature branch
+3. Enter plan mode and present the approach before writing any code or making changes
+
+Do not skip any of these steps, even for small changes. Branch names should be lowercase-hyphenated and describe the work (e.g., `add-user-discovery`, `fix-self-destruct-tag`, `update-ip-docs`).
+
 ## Project Overview
 
 Agent Enforcer is an enterprise AI configuration enforcement system ("Stop the Slop"). It consists of:
