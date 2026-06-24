@@ -184,7 +184,7 @@ export class DemoStack extends cdk.Stack {
       '# Parse token usage from Claude Code JSON output',
       "INPUT_TOKENS=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); u=d.get('usage',{}); print(u.get('input_tokens',0)+u.get('cache_read_input_tokens',0)+u.get('cache_creation_input_tokens',0))\" 2>/dev/null || echo 0)",
       "OUTPUT_TOKENS=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); print(d.get('usage',{}).get('output_tokens',0))\" 2>/dev/null || echo 0)",
-      "COST_USD=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); print(d.get('cost_usd',0))\" 2>/dev/null || echo 0)",
+      "COST_USD=$(python3 -c \"import json; d=json.load(open('/demo/output/session.json')); print(d.get('total_cost_usd', d.get('cost_usd', 0)))\" 2>/dev/null || echo 0)",
       '',
       '# Capture summary stats',
       `echo "instance: ${instanceNum}" > /demo/output/meta.txt`,
