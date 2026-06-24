@@ -1,5 +1,5 @@
 Name:           agent-enforcer
-Version:        0.2.2
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        AI Configuration Enforcement Agent — syncs .claude/ configs via enforcement API
 License:        Proprietary
