@@ -1,0 +1,309 @@
+- main [ref=e2]:
+  - region "Page 1" [ref=e3]:
+    - generic [ref=e4]:
+      - img "Alchemist" [ref=e5]
+      - generic [ref=e6]: Agent Enforcer
+    - generic [ref=e7]:
+      - generic [ref=e10]: Agent Enforcer
+      - heading "Stop the Slop." [level=1] [ref=e11]
+      - paragraph [ref=e12]: Enforce What Your AI Agents Are Allowed to Do — Before They Do It.
+      - paragraph [ref=e13]:
+        - strong [ref=e14]: Agent Enforcer
+        - text: by Alchemist is an enterprise-grade policy enforcement layer for AI coding agents. It continuously distributes, applies, and locks in your organization's security policies, compliance requirements, and coding standards across every developer and every AI agent on your network — automatically, at the system level, before a single line of code is written.
+      - blockquote [ref=e15]:
+        - paragraph [ref=e16]: When your agency deploys AI coding assistants, who's making sure they follow your rules?
+    - generic [ref=e17]:
+      - paragraph [ref=e18]: The Problem
+      - heading "Ungoverned AI Is Already Writing Your Code" [level=2] [ref=e19]
+      - generic [ref=e20]:
+        - generic [ref=e21]:
+          - paragraph [ref=e22]: Federal agencies are deploying AI coding assistants at scale. Developers are writing more code, faster than ever — powered by large language models that have no inherent knowledge of your security controls, your accreditation requirements, or your internal standards.
+          - paragraph [ref=e23]:
+            - strong [ref=e24]: "Without enforcement:"
+          - list [ref=e25]:
+            - listitem [ref=e26]: Every AI session starts with a blank slate. No policies. No guardrails.
+            - listitem [ref=e27]: Developers prompt AI differently, producing inconsistent, non-compliant output.
+            - listitem [ref=e28]: Security vulnerabilities get written — and shipped — before any human reviews them.
+            - listitem [ref=e29]: Audit trails are thin. Accountability is unclear.
+            - listitem [ref=e30]: Token costs balloon as agents loop through unguided trial and error.
+        - 'img "Split illustration: ungoverned AI deployment on the left versus governed unified deployment on the right" [ref=e32]'
+    - generic [ref=e33]:
+      - paragraph [ref=e34]: The Solution
+      - heading "System-Level Enforcement. Zero Developer Friction." [level=2] [ref=e35]
+      - paragraph [ref=e36]:
+        - strong [ref=e37]: Agent Enforcer
+        - text: installs as a lightweight system service on developer workstations and CI/CD environments. It connects to your organization's central enforcement bucket, pulls your approved policy configuration, and applies it to every AI coding session — system-wide, without user action.
+      - generic [ref=e38]:
+        - generic [ref=e39]:
+          - generic [ref=e41]: 
+          - generic [ref=e42]: Policy Source
+          - generic [ref=e43]: Enforcement Bucket
+          - generic [ref=e44]: NIST controls, coding standards, security policies
+        - generic [ref=e46]: 
+        - generic [ref=e47]:
+          - generic [ref=e49]: 
+          - generic [ref=e50]: Distribution Engine
+          - generic [ref=e51]: Bedrock Config Generator
+          - generic [ref=e52]: Converts policy docs into structured AI guidance
+        - generic [ref=e53]:
+          - generic [ref=e54]: 
+          - generic [ref=e55]:
+            - text: Automatic. Continuous.
+            - text: 15-min sync.
+        - generic [ref=e56]:
+          - generic [ref=e58]: 
+          - generic [ref=e59]: Enforcement Layer
+          - generic [ref=e60]: Every Developer. Every Session.
+          - generic [ref=e61]: Agent Enforcer on every workstation, active at session start
+      - paragraph [ref=e62]:
+        - strong [ref=e63]: Policies are defined once by your team or our specialists — then enforced everywhere, automatically.
+      - list [ref=e64]:
+        - listitem [ref=e65]: ✅ Security requirements baked in before code is written
+        - listitem [ref=e66]: ✅ Compliance controls active on every AI session
+        - listitem [ref=e67]: ✅ Coding standards applied uniformly across all developers
+        - listitem [ref=e68]: ✅ No developer action required — system-level enforcement
+        - listitem [ref=e69]: ✅ Updates propagate to every endpoint within 15 minutes
+        - listitem [ref=e70]: ✅ Works with existing Claude Code deployments — no rearchitecting
+  - region "Page 2" [ref=e71]:
+    - generic [ref=e72]:
+      - img "Alchemist" [ref=e73]
+      - generic [ref=e74]: Agent Enforcer
+    - generic [ref=e75]:
+      - paragraph [ref=e76]: Three Pillars of Value
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - paragraph [ref=e79]: 01 — Security & Compliance Enforcement
+          - heading "Controls Active Before Code Is Written" [level=2] [ref=e80]
+          - paragraph [ref=e81]: "AI agents do exactly what they're told. If they aren't told your security requirements, they'll write code that ignores them. Agent Enforcer embeds your controls directly into the AI's operating context:"
+          - list [ref=e82]:
+            - listitem [ref=e83]:
+              - strong [ref=e84]: Parameterized queries only
+              - text: — SQL injection vulnerabilities blocked at the source
+            - listitem [ref=e85]:
+              - strong [ref=e86]: Secrets via environment variables
+              - text: — no hardcoded credentials, ever
+            - listitem [ref=e87]:
+              - strong [ref=e88]: Non-root container execution
+              - text: — least-privilege Docker enforced by default
+            - listitem [ref=e89]:
+              - strong [ref=e90]: HTTPS-only endpoints
+              - text: — enforced protocol standards
+            - listitem [ref=e91]:
+              - strong [ref=e92]: Approved library lists
+              - text: — unapproved dependencies flagged before they appear
+            - listitem [ref=e93]:
+              - strong [ref=e94]: Custom policy documents
+              - text: — CMMC, FedRAMP, internal STIGs, program-specific controls
+          - generic [ref=e95]:
+            - img "Agent Enforcer" [ref=e97]
+            - generic [ref=e98]:
+              - generic [ref=e99]: NIST 800-53
+              - generic [ref=e100]: CMMC
+              - generic [ref=e101]: FedRAMP
+              - generic [ref=e102]: STIG
+          - paragraph [ref=e103]: "Accreditation bodies are beginning to ask: \"How do you govern your AI?\" Agent Enforcer is your answer."
+        - generic [ref=e104]:
+          - paragraph [ref=e105]: 02 — Token Cost Reduction
+          - heading "20–35% Savings on Developer AI Spend" [level=2] [ref=e106]
+          - paragraph [ref=e107]: AI agents without guidance iterate wastefully. They make assumptions, get corrected, retry, loop. Every back-and-forth exchange burns tokens. Agent Enforcer eliminates the most expensive loops before they start by giving the AI the right context from the first prompt.
+          - generic [ref=e108]:
+            - generic [ref=e109]: Monthly Developer Token Spend
+            - generic [ref=e110]:
+              - generic [ref=e113]:
+                - text: Unenforced
+                - text: AI
+              - generic [ref=e114]:
+                - generic [ref=e115]: 20–35% savings
+                - generic [ref=e116]:
+                  - text: With Agent
+                  - text: Enforcer
+          - paragraph [ref=e117]:
+            - strong [ref=e118]: "Conservative example — $1M/month agency token spend:"
+          - table [ref=e119]:
+            - rowgroup [ref=e120]:
+              - row "Scenario Dev Share Savings Annual" [ref=e121]:
+                - columnheader "Scenario" [ref=e122]
+                - columnheader "Dev Share" [ref=e123]
+                - columnheader "Savings" [ref=e124]
+                - columnheader "Annual" [ref=e125]
+            - rowgroup [ref=e126]:
+              - row "Conservative 40% ($400k) 20% ~$960k/yr" [ref=e127]:
+                - cell "Conservative" [ref=e128]
+                - cell "40% ($400k)" [ref=e129]
+                - cell "20%" [ref=e130]
+                - cell "~$960k/yr" [ref=e131]:
+                  - strong [ref=e132]: ~$960k/yr
+              - row "Moderate 40% ($400k) 30% ~$1.44M/yr" [ref=e133]:
+                - cell "Moderate" [ref=e134]
+                - cell "40% ($400k)" [ref=e135]
+                - cell "30%" [ref=e136]
+                - cell "~$1.44M/yr" [ref=e137]:
+                  - strong [ref=e138]: ~$1.44M/yr
+              - row "Optimistic 40% ($400k) 35% ~$1.68M/yr" [ref=e139]:
+                - cell "Optimistic" [ref=e140]
+                - cell "40% ($400k)" [ref=e141]
+                - cell "35%" [ref=e142]
+                - cell "~$1.68M/yr" [ref=e143]:
+                  - strong [ref=e144]: ~$1.68M/yr
+          - paragraph [ref=e145]: At the conservative estimate alone, many agencies recover platform cost in Year 1 — before accounting for security risk reduction or productivity gains.
+      - generic [ref=e147]:
+        - paragraph [ref=e148]: 03 — Uniform Coding Standards
+        - generic [ref=e149]:
+          - generic [ref=e150]:
+            - heading "Same Task. Same AI. Consistent, Compliant Output." [level=2] [ref=e151]
+            - paragraph [ref=e152]: "Inconsistent code is expensive code. When 50 developers prompt the same AI differently, you get 50 different patterns, 50 different security postures, and exponentially more review burden. Agent Enforcer standardizes output across your entire development organization:"
+            - list [ref=e153]:
+              - listitem [ref=e154]: Mandatory docstrings and documentation standards
+              - listitem [ref=e155]: Type hints and annotation requirements
+              - listitem [ref=e156]: Named constants — no magic numbers
+              - listitem [ref=e157]: Approved architectural patterns per project type
+              - listitem [ref=e158]: Style guide compliance before code is committed
+            - paragraph [ref=e159]:
+              - strong [ref=e160]: "Demonstrated result:"
+              - text: In controlled testing, enforced AI sessions produced code with zero critical security vulnerabilities versus two critical vulnerabilities in unenforced sessions — running the same AI model, given the same task.
+          - generic [ref=e162]:
+            - generic [ref=e163]:
+              - generic [ref=e164]: Without Enforcer
+              - generic [ref=e165]: "def get_user(uid): query = f\"SELECT * FROM users WHERE id={uid}\" result = db.execute(query) return result[0]"
+            - generic [ref=e166]:
+              - generic [ref=e167]: With Enforcer
+              - generic [ref=e168]: "def get_user(user_id: int) -> dict: \"\"\"Retrieve user record by ID.\"\"\" QUERY = \"SELECT * FROM users WHERE id = %s\" result = db.execute(QUERY, (user_id,)) return result[0]"
+  - region "Page 3" [ref=e169]:
+    - generic [ref=e170]:
+      - img "Alchemist" [ref=e171]
+      - generic [ref=e172]: Agent Enforcer
+    - generic [ref=e173]:
+      - paragraph [ref=e174]: How It Works
+      - heading "Four Steps. Compliant by Default." [level=2] [ref=e175]
+      - generic [ref=e176]:
+        - generic [ref=e177]:
+          - generic [ref=e179]: 
+          - generic [ref=e180]: Define Policy
+          - generic [ref=e181]: "Your team or Alchemist specialists author enforcement documents in plain English: security requirements, compliance controls, coding standards."
+        - generic [ref=e182]:
+          - generic [ref=e184]: 
+          - generic [ref=e185]: Generate Configuration
+          - generic [ref=e186]: Bedrock-powered engine converts policy docs into structured AI guidance — CLAUDE.md, settings, skills, commands.
+        - generic [ref=e187]:
+          - generic [ref=e189]: 
+          - generic [ref=e190]: Distribute Automatically
+          - generic [ref=e191]: Agents on every developer machine sync enforcement config every 15 minutes. No developer action required.
+        - generic [ref=e192]:
+          - generic [ref=e194]: 
+          - generic [ref=e195]: Enforce at Session Start
+          - generic [ref=e196]: Every AI coding session starts with your policies already active. Compliant by default.
+      - generic [ref=e197]:
+        - generic [ref=e198]:
+          - paragraph [ref=e199]: Deployment Profile
+          - table [ref=e200]:
+            - rowgroup [ref=e201]:
+              - row "Attribute Detail" [ref=e202]:
+                - columnheader "Attribute" [ref=e203]
+                - columnheader "Detail" [ref=e204]
+            - rowgroup [ref=e205]:
+              - row "Platform Rocky Linux / RHEL 9 (RPM package)" [ref=e206]:
+                - cell "Platform" [ref=e207]:
+                  - strong [ref=e208]: Platform
+                - cell "Rocky Linux / RHEL 9 (RPM package)" [ref=e209]
+              - row "Agent size < 1 MB installed" [ref=e210]:
+                - cell "Agent size" [ref=e211]:
+                  - strong [ref=e212]: Agent size
+                - cell "< 1 MB installed" [ref=e213]
+              - row "Network requirement Outbound HTTPS to S3 endpoint only" [ref=e214]:
+                - cell "Network requirement" [ref=e215]:
+                  - strong [ref=e216]: Network requirement
+                - cell "Outbound HTTPS to S3 endpoint only" [ref=e217]
+              - row "Air-gap compatible Yes — S3-compatible endpoint configurable" [ref=e218]:
+                - cell "Air-gap compatible" [ref=e219]:
+                  - strong [ref=e220]: Air-gap compatible
+                - cell "Yes — S3-compatible endpoint configurable" [ref=e221]
+              - row "Enforcement latency Policy updates apply within 15 minutes" [ref=e222]:
+                - cell "Enforcement latency" [ref=e223]:
+                  - strong [ref=e224]: Enforcement latency
+                - cell "Policy updates apply within 15 minutes" [ref=e225]
+              - row "User action required None after initial install" [ref=e226]:
+                - cell "User action required" [ref=e227]:
+                  - strong [ref=e228]: User action required
+                - cell "None after initial install" [ref=e229]
+              - row "Credentials required IAM role or instance profile — no user secrets" [ref=e230]:
+                - cell "Credentials required" [ref=e231]:
+                  - strong [ref=e232]: Credentials required
+                - cell "IAM role or instance profile — no user secrets" [ref=e233]
+              - row "Audit trail Sync logs, policy version history in S3" [ref=e234]:
+                - cell "Audit trail" [ref=e235]:
+                  - strong [ref=e236]: Audit trail
+                - cell "Sync logs, policy version history in S3" [ref=e237]
+              - row "Management console AWS-native (S3 + CloudWatch)" [ref=e238]:
+                - cell "Management console" [ref=e239]:
+                  - strong [ref=e240]: Management console
+                - cell "AWS-native (S3 + CloudWatch)" [ref=e241]
+        - generic [ref=e242]:
+          - paragraph [ref=e243]: Why Alchemist
+          - paragraph [ref=e244]:
+            - text: "Alchemist was founded on a single conviction: the value of AI in government is determined not by what the AI"
+            - emphasis [ref=e245]: can
+            - text: do, but by what it's
+            - emphasis [ref=e246]: allowed
+            - text: to do — and who controls that boundary.
+          - paragraph [ref=e247]: "Agent Enforcer puts that control where it belongs: with your security and compliance teams, operating at the system level, before code is written."
+          - paragraph [ref=e248]: We work with agencies to understand their specific requirements — their accreditation frameworks, their internal policies, their existing tooling — and translate that into enforcement documentation that makes every AI coding session compliant by default.
+      - paragraph [ref=e249]: Licensing & Investment
+      - generic [ref=e250]:
+        - generic [ref=e251]:
+          - heading "Division" [level=3] [ref=e252]
+          - generic [ref=e253]: Up to 250 seats
+          - generic [ref=e254]: $750,000/year
+        - generic [ref=e255]:
+          - generic [ref=e256]: Most Common
+          - heading "Agency" [level=3] [ref=e257]
+          - generic [ref=e258]: Up to 1,000 seats
+          - generic [ref=e259]: $2,000,000/year
+        - generic [ref=e260]:
+          - heading "Enterprise" [level=3] [ref=e261]
+          - generic [ref=e262]: Up to 5,000 seats
+          - generic [ref=e263]: $4,000,000/year
+      - table [ref=e264]:
+        - rowgroup [ref=e265]:
+          - row "Tier Seats Annual Investment" [ref=e266]:
+            - columnheader "Tier" [ref=e267]
+            - columnheader "Seats" [ref=e268]
+            - columnheader "Annual Investment" [ref=e269]
+        - rowgroup [ref=e270]:
+          - row "Division Up to 250 $750,000" [ref=e271]:
+            - cell "Division" [ref=e272]
+            - cell "Up to 250" [ref=e273]
+            - cell "$750,000" [ref=e274]:
+              - strong [ref=e275]: $750,000
+          - row "Agency Up to 1,000 $2,000,000" [ref=e276]:
+            - cell "Agency" [ref=e277]
+            - cell "Up to 1,000" [ref=e278]
+            - cell "$2,000,000" [ref=e279]:
+              - strong [ref=e280]: $2,000,000
+          - row "Enterprise Up to 5,000 $4,000,000" [ref=e281]:
+            - cell "Enterprise" [ref=e282]
+            - cell "Up to 5,000" [ref=e283]
+            - cell "$4,000,000" [ref=e284]:
+              - strong [ref=e285]: $4,000,000
+          - row "Unlimited Unlimited $7,500,000" [ref=e286]:
+            - cell "Unlimited" [ref=e287]
+            - cell "Unlimited" [ref=e288]
+            - cell "$7,500,000" [ref=e289]:
+              - strong [ref=e290]: $7,500,000
+      - generic [ref=e291]:
+        - generic [ref=e292]:
+          - generic [ref=e293]:
+            - generic [ref=e294]: 
+            - text: Managed Enforcement Specialists
+            - emphasis [ref=e295]: (add-on)
+          - paragraph [ref=e296]: An embedded Alchemist specialist who owns your enforcement posture end-to-end — learning your security architecture, compliance frameworks, network topology, and program requirements, then authoring and maintaining enforcement documentation on your behalf. The specialist ensures your AI agents stay current as requirements evolve.
+        - generic [ref=e298]:
+          - text: $1,250,000
+          - generic [ref=e299]: /year
+      - paragraph [ref=e300]:
+        - strong [ref=e301]: Founding Partner Rate
+        - text: "— first agency engagement: Contact for details."
+      - paragraph [ref=e302]: © 2026 Alchemist. All rights reserved. Agent Enforcer is a trademark of Alchemist. Results based on controlled testing; individual savings vary by workload composition and enforcement policy depth.
+    - generic [ref=e303]:
+      - img "Alchemist" [ref=e304]
+      - generic [ref=e305]: agent-enforcer.alchemist.ai
+      - generic [ref=e306]: Confidential

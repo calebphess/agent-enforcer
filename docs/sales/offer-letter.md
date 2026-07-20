@@ -3,17 +3,20 @@
 
 ---
 
-[IMAGE: Cover page. Full bleed navy background. Top-left: Alchemist horizontal logo in white. Center of page: Large Agent Enforcer square icon (provided) above the text "Agent Enforcer" in gold, large weight. Below that in white, slightly smaller: "Founding Partner Proposal". Below that in light gray, smaller: "Confidential — Prepared for [AGENCY NAME]". Bottom strip: gold horizontal rule, then below it in white small text: "Alchemist | agent-enforcer.alchemist.ai | [DATE]". Clean, authoritative, no other elements.]
+## Cover page.
+Top-left: Alchemist horizontal logo. 
+Center of page: Large Agent Enforcer square icon (provided) above the text "Agent Enforcer" in gold, large weight. Below that in white, slightly smaller: "Founding Partner Proposal". Below that in light gray, smaller: "Confidential". 
+Bottom strip: gold horizontal rule, then below it in white small text: "Alchemist • 2026"
 
 ---
 
 <!-- PAGE 2 — EXECUTIVE SUMMARY -->
 
-[IMAGE: Thin header bar on each interior page — navy, left-aligned Alchemist horizontal logo small, right-aligned "CONFIDENTIAL — VENDOR PROPRIETARY" in gold small caps. This header repeats on pages 2–5.]
+[HEADER: Thin header bar on each interior page — left-aligned Alchemist horizontal logo small, right-aligned "CONFIDENTIAL — VENDOR PROPRIETARY" in gold small caps. This header repeats on pages 2–5.]
 
 ## Executive Summary
 
-Alchemist is pleased to present this Founding Partner Proposal to **[AGENCY NAME]** for the deployment of **Agent Enforcer** — an enterprise AI policy enforcement platform purpose-built for government environments.
+Alchemist is pleased to present this Founding Partner Proposal for the deployment of **Agent Enforcer** — an enterprise AI policy enforcement platform purpose-built for government environments.
 
 This proposal covers:
 - A **full Agency-tier deployment** of Agent Enforcer (up to 1,000 registered enforcement agents)
@@ -29,7 +32,7 @@ Based on conservative assumptions about your AI token spend, we project Agent En
 
 ## The Opportunity
 
-[IMAGE: Horizontal timeline graphic. Two eras separated by a vertical gold line labeled "NOW". Left side (gray, faded): "Pre-AI Development" — icons of developers at desks, slow output, manual code review, compliance checked post-hoc. Right side (vibrant, navy/gold): "AI-Augmented Development" — developers with AI agents, fast output, continuous compliance, policy enforced pre-generation. Above the timeline, a risk meter gauge graphic showing risk peaking at the "NOW" line labeled "Ungoverned AI Deployment Window". Clean vector, conceptual.]
+[IMAGE: Horizontal timeline graphic. Two eras separated by a vertical gold line labeled "NOW". Left side (gray, faded): "Pre-AI Development" — icons of developers at desks, slow output, manual code review, compliance checked post-hoc. Right side (vibrant, navy/gold): "AI-Augmented Development" — developers with AI agents, fast output, continuous compliance, policy enforced pre-generation. Above the timeline, a risk meter gauge graphic showing risk with 3 sections left grey, middle gold peaking at the "NOW" line labeled "Ungoverned AI Deployment Window", right navy. Clean vector, conceptual.]
 
 Federal agencies are in a brief but consequential window. AI coding assistants are being deployed at scale — and the governance frameworks to control them are still catching up. Every day an AI agent runs without enforcement is a day that:
 

@@ -1,0 +1,328 @@
+- main [ref=e2]:
+  - region "Cover page" [ref=e3]:
+    - img "Alchemist" [ref=e4]
+    - generic [ref=e5]:
+      - img "Agent Enforcer icon" [ref=e6]
+      - heading "Agent Enforcer" [level=1] [ref=e7]
+      - paragraph [ref=e8]: Founding Partner Proposal
+      - paragraph [ref=e9]: Confidential
+    - paragraph [ref=e12]: Alchemist • 2026
+  - region "Executive summary and opportunity" [ref=e13]:
+    - generic [ref=e14]:
+      - img "Alchemist" [ref=e15]
+      - generic [ref=e16]: Confidential - Vendor Proprietary
+    - paragraph [ref=e18]: Founding Partner Proposal
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - heading "Executive Summary" [level=2] [ref=e21]
+        - paragraph [ref=e22]:
+          - text: Alchemist is pleased to present this Founding Partner Proposal for the deployment of
+          - strong [ref=e23]: Agent Enforcer
+          - text: "- an enterprise AI policy enforcement platform purpose-built for government environments."
+        - generic [ref=e24]:
+          - generic [ref=e25]:
+            - generic [ref=e26]: Year 1 Investment
+            - strong [ref=e27]: $2,500,000
+          - generic [ref=e28]:
+            - generic [ref=e29]: Year 2+ Annual
+            - strong [ref=e30]: $3,250,000
+        - paragraph [ref=e31]:
+          - text: This proposal covers a full Agency-tier deployment of Agent Enforcer for up to 1,000 registered enforcement agents, a dedicated Managed Enforcement Specialist embedded with your organization, and a Founding Partner rate reflecting
+          - strong [ref=e32]: CIA
+          - text: "'s position as an early adopter and strategic reference account."
+        - paragraph [ref=e33]:
+          - text: Based on conservative assumptions about your AI token spend, we project Agent Enforcer will
+          - strong [ref=e34]: return its cost in token savings alone within 12–18 months
+          - text: "- with security enforcement, compliance assurance, and standardized coding output delivered as immediate, compounding value from Day 1."
+      - generic [ref=e35]:
+        - heading "The Opportunity" [level=2] [ref=e36]
+        - img "Opportunity timeline showing Pre-AI Development, NOW, and AI-Augmented Development with risk meter" [ref=e37]
+        - paragraph [ref=e38]: Federal agencies are in a brief but consequential window. AI coding assistants are being deployed at scale - and the governance frameworks to control them are still catching up.
+        - paragraph [ref=e39]: Every day an AI agent runs without enforcement is a day that code is generated without verification, compliance documentation reflects intent rather than output, token spend accrues without efficiency gains, and the organization's AI posture remains undocumented to auditors.
+        - paragraph [ref=e40]: Agent Enforcer closes this window.
+    - generic [ref=e41]:
+      - heading "Understanding Your Environment" [level=2] [ref=e42]
+      - paragraph [ref=e43]:
+        - text: We recognize that government AI deployments are not uniform.
+        - strong [ref=e44]: CIA
+        - text: "'s requirements likely span multiple dimensions that commercial tools do not address."
+      - table [ref=e45]:
+        - rowgroup [ref=e46]:
+          - row "Dimension What We Address" [ref=e47]:
+            - columnheader "Dimension" [ref=e48]
+            - columnheader "What We Address" [ref=e49]
+        - rowgroup [ref=e50]:
+          - row "Security Controls NIST 800-53, CMMC, FedRAMP, and program-specific requirements embedded into every AI session." [ref=e51]:
+            - cell "Security Controls" [ref=e52]:
+              - strong [ref=e53]: Security Controls
+            - cell "NIST 800-53, CMMC, FedRAMP, and program-specific requirements embedded into every AI session." [ref=e54]
+          - row "Accreditation ATO-supportable audit trail of enforcement policy version history." [ref=e55]:
+            - cell "Accreditation" [ref=e56]:
+              - strong [ref=e57]: Accreditation
+            - cell "ATO-supportable audit trail of enforcement policy version history." [ref=e58]
+          - row "Network Architecture Cloud-native; supports air-gapped cloud environments with endpoints configurable for isolated network boundaries." [ref=e59]:
+            - cell "Network Architecture" [ref=e60]:
+              - strong [ref=e61]: Network Architecture
+            - cell "Cloud-native; supports air-gapped cloud environments with endpoints configurable for isolated network boundaries." [ref=e62]
+          - row "Internal Policy Custom enforcement documents authored to your specific security and coding standards." [ref=e63]:
+            - cell "Internal Policy" [ref=e64]:
+              - strong [ref=e65]: Internal Policy
+            - cell "Custom enforcement documents authored to your specific security and coding standards." [ref=e66]
+          - row "Workforce Scale Enforcement propagates to all registered endpoints within 15 minutes - no per-user configuration." [ref=e67]:
+            - cell "Workforce Scale" [ref=e68]:
+              - strong [ref=e69]: Workforce Scale
+            - cell "Enforcement propagates to all registered endpoints within 15 minutes - no per-user configuration." [ref=e70]
+          - row "Existing Tooling Installs alongside Claude Code; no existing workflow disruption." [ref=e71]:
+            - cell "Existing Tooling" [ref=e72]:
+              - strong [ref=e73]: Existing Tooling
+            - cell "Installs alongside Claude Code; no existing workflow disruption." [ref=e74]
+      - paragraph [ref=e75]: Our Managed Enforcement Specialist will invest time upfront learning your environment before a single enforcement document is written.
+  - region "Return on investment and proposed solution" [ref=e76]:
+    - generic [ref=e77]:
+      - img "Alchemist" [ref=e78]
+      - generic [ref=e79]: Confidential - Vendor Proprietary
+    - generic [ref=e80]:
+      - paragraph [ref=e81]: Economic Case
+      - heading "Return on Investment" [level=2] [ref=e82]
+      - generic [ref=e83]:
+        - paragraph [ref=e84]: Cost Savings Breakdown
+        - generic [ref=e85]: Break-even
+        - generic [ref=e92]:
+          - generic [ref=e93]: $0
+          - generic [ref=e94]: $2.5M
+          - generic [ref=e95]: $5M
+          - generic [ref=e96]: $10M
+          - generic [ref=e97]: $15M
+        - generic [ref=e98]:
+          - generic [ref=e99]: Token Savings ($3M*)
+          - generic [ref=e101]: Security Incident Savings ($1–$10M)
+          - generic [ref=e103]: Savings in Development Hours ($1–$10M)
+        - paragraph [ref=e105]: "* Assuming conservative savings on $15M in yearly token spend"
+      - generic [ref=e106]:
+        - generic [ref=e107]:
+          - heading "Token Savings" [level=3] [ref=e108]
+          - paragraph [ref=e109]: "Based on publicly available benchmarks and Alchemist's own controlled testing, we use the following conservative model:"
+          - table [ref=e110]:
+            - rowgroup [ref=e111]:
+              - row "Total monthly Claude token spend $1,000,000" [ref=e112]:
+                - cell "Total monthly Claude token spend" [ref=e113]
+                - cell "$1,000,000" [ref=e114]
+              - row "Developer / coding workload share 40%" [ref=e115]:
+                - cell "Developer / coding workload share" [ref=e116]
+                - cell "40%" [ref=e117]
+              - row "Developer monthly token spend $400,000" [ref=e118]:
+                - cell "Developer monthly token spend" [ref=e119]
+                - cell "$400,000" [ref=e120]
+              - row "Conservative efficiency gain 20%" [ref=e121]:
+                - cell "Conservative efficiency gain" [ref=e122]
+                - cell "20%" [ref=e123]
+              - row "Monthly savings $80,000" [ref=e124]:
+                - cell "Monthly savings" [ref=e125]:
+                  - strong [ref=e126]: Monthly savings
+                - cell "$80,000" [ref=e127]:
+                  - strong [ref=e128]: $80,000
+              - row "Annual savings ~$960,000" [ref=e129]:
+                - cell "Annual savings" [ref=e130]:
+                  - strong [ref=e131]: Annual savings
+                - cell "~$960,000" [ref=e132]:
+                  - strong [ref=e133]: ~$960,000
+          - paragraph [ref=e134]:
+            - text: At a moderate efficiency gain of 30%, annual savings reach
+            - strong [ref=e135]: ~$1.44M
+            - text: . At 35%,
+            - strong [ref=e136]: ~$1.68M
+            - text: .
+          - paragraph [ref=e137]:
+            - strong [ref=e138]: "Year 1 net cost after token savings: ~$1,540,000."
+        - generic [ref=e139]:
+          - heading "Security Risk Reduction" [level=3] [ref=e140]
+          - generic [ref=e141]:
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - paragraph [ref=e144]: Without Agent Enforcer
+                - img [ref=e145]:
+                  - generic [ref=e148]: Risk
+                  - generic [ref=e149]: LOW
+                  - generic [ref=e150]: HIGH
+              - generic [ref=e151]:
+                - paragraph [ref=e152]: With Agent Enforcer
+                - img [ref=e153]:
+                  - generic [ref=e156]: Risk
+                  - generic [ref=e157]: LOW
+                  - generic [ref=e158]: HIGH
+            - table [ref=e159]:
+              - rowgroup [ref=e160]:
+                - row "Hardcoded credentials  " [ref=e161]:
+                  - cell "Hardcoded credentials" [ref=e162]
+                  - cell "" [ref=e163]:
+                    - generic [ref=e164]: 
+                  - cell "" [ref=e165]:
+                    - generic [ref=e166]: 
+                - row "SQL injection  " [ref=e167]:
+                  - cell "SQL injection" [ref=e168]
+                  - cell "" [ref=e169]:
+                    - generic [ref=e170]: 
+                  - cell "" [ref=e171]:
+                    - generic [ref=e172]: 
+                - row "Privilege escalation  " [ref=e173]:
+                  - cell "Privilege escalation" [ref=e174]
+                  - cell "" [ref=e175]:
+                    - generic [ref=e176]: 
+                  - cell "" [ref=e177]:
+                    - generic [ref=e178]: 
+          - paragraph [ref=e179]:
+            - text: In Alchemist's controlled testing, unenforced AI coding sessions produced an average of
+            - strong [ref=e180]: one critical security vulnerability per task
+            - text: that would require human remediation before deployment. Enforced sessions produced zero.
+          - paragraph [ref=e181]: Agent Enforcer does not replace your security team. It makes your security team's requirements impossible for AI agents to ignore.
+      - generic [ref=e182]:
+        - generic [ref=e183]:
+          - heading "Productivity & Standards Value" [level=3] [ref=e184]
+          - paragraph [ref=e185]: Standardized AI output means less code review friction, fewer rework cycles, junior developers operating with institutional standards from Day 1, and consistent, auditable AI-assisted development practices.
+          - paragraph [ref=e186]:
+            - text: A 5% productivity improvement across 1,000 developers at a fully loaded cost of $200k/developer/year equals
+            - strong [ref=e187]: $10M in recovered developer capacity annually
+            - text: .
+        - generic [ref=e188]:
+          - heading "Proposed Solution" [level=3] [ref=e189]
+          - paragraph [ref=e190]:
+            - strong [ref=e191]: "Component 1 - Agency Platform License:"
+            - text: Agent Enforcer Agency Tier for up to 1,000 registered enforcement agents, with RPM deployment, central policy distribution, 15-minute propagation, system-level enforcement, version history, and AWS-native management.
+          - paragraph [ref=e192]:
+            - strong [ref=e193]: "Component 2 - Managed Enforcement Specialist:"
+            - text: A dedicated Alchemist specialist for environment learning, policy authoring, ongoing updates, monthly reporting, compliance documentation, and technical review sessions.
+  - region "Pricing and terms" [ref=e194]:
+    - generic [ref=e195]:
+      - img "Alchemist" [ref=e196]
+      - generic [ref=e197]: Confidential - Vendor Proprietary
+    - generic [ref=e198]:
+      - paragraph [ref=e199]: Commercial Terms
+      - heading "Proposed Investment" [level=2] [ref=e200]
+      - generic [ref=e201]:
+        - article [ref=e202]:
+          - generic [ref=e203]: Founding Partner Rate - 23% Below Standard
+          - heading "Year 1 - Founding Partner Investment" [level=3] [ref=e204]
+          - generic [ref=e205]:
+            - generic [ref=e206]: Agency Platform License
+            - strong [ref=e207]: $1,250,000
+          - generic [ref=e208]:
+            - generic [ref=e209]: Managed Enforcement Specialist
+            - strong [ref=e210]: $1,000,000
+          - generic [ref=e211]:
+            - generic [ref=e212]: Onboarding & Implementation
+            - strong [ref=e213]: Included
+          - generic [ref=e214]:
+            - generic [ref=e215]: Total Year 1
+            - strong [ref=e216]: $2,500,000
+        - article [ref=e217]:
+          - heading "Year 2+ Standard Rate" [level=3] [ref=e218]
+          - generic [ref=e219]:
+            - generic [ref=e220]: Agency Platform License
+            - strong [ref=e221]: $2,000,000
+          - generic [ref=e222]:
+            - generic [ref=e223]: Managed Enforcement Specialist
+            - strong [ref=e224]: $1,250,000
+          - generic [ref=e225]:
+            - generic [ref=e226]: Total Annual
+            - strong [ref=e227]: $3,250,000/year
+      - generic [ref=e228]:
+        - generic [ref=e229]:
+          - heading "Founding Partner Benefits" [level=3] [ref=e230]
+          - list [ref=e231]:
+            - listitem [ref=e232]:
+              - strong [ref=e233]: Roadmap influence
+              - text: "- direct input into federal-specific product priorities."
+            - listitem [ref=e234]:
+              - strong [ref=e235]: Reference account exclusivity
+              - text: "- Alchemist will not list your agency publicly without written approval."
+            - listitem [ref=e236]:
+              - strong [ref=e237]: Expansion pricing lock
+              - text: "- Expansion seats priced at $1,500/seat during the contract period."
+        - generic [ref=e238]:
+          - heading "Payment & Contract Structure" [level=3] [ref=e239]
+          - table [ref=e240]:
+            - rowgroup [ref=e241]:
+              - row "Contract type Firm Fixed Price (FFP)" [ref=e242]:
+                - cell "Contract type" [ref=e243]
+                - cell "Firm Fixed Price (FFP)" [ref=e244]
+              - row "Payment schedule 50% upon award; 50% at 6-month milestone" [ref=e245]:
+                - cell "Payment schedule" [ref=e246]
+                - cell "50% upon award; 50% at 6-month milestone" [ref=e247]
+              - row "Contract vehicle IC Marketplace (ICMP); GSA Schedule, agency vehicle, and sole source justification available" [ref=e248]:
+                - cell "Contract vehicle" [ref=e249]
+                - cell "IC Marketplace (ICMP); GSA Schedule, agency vehicle, and sole source justification available" [ref=e250]
+              - row "Period of performance 12 months from contract award" [ref=e251]:
+                - cell "Period of performance" [ref=e252]
+                - cell "12 months from contract award" [ref=e253]
+              - row "Renewal Annual, at standard rates" [ref=e254]:
+                - cell "Renewal" [ref=e255]
+                - cell "Annual, at standard rates" [ref=e256]
+      - paragraph [ref=e257]: Alchemist is prepared to support sole source justification under FAR 6.302-1 given Agent Enforcer's unique technical approach to AI enforcement. Sole source documentation available upon request.
+  - region "Next steps and about Alchemist" [ref=e258]:
+    - generic [ref=e259]:
+      - img "Alchemist" [ref=e260]
+      - generic [ref=e261]: Confidential - Vendor Proprietary
+    - generic [ref=e262]:
+      - paragraph [ref=e263]: Deployment Path
+      - heading "Implementation Timeline" [level=2] [ref=e264]
+      - generic [ref=e265]:
+        - generic [ref=e267]:
+          - generic [ref=e268]: M1
+          - generic [ref=e269]: M2
+          - generic [ref=e270]: M3
+          - generic [ref=e271]: M4
+          - generic [ref=e272]: M5
+          - generic [ref=e273]: M6
+        - generic [ref=e275]: Onboarding & Access
+        - generic [ref=e279]: Environment Assessment
+        - generic [ref=e283]: Initial Policy Authoring
+        - generic [ref=e287]: Pilot Deployment (50 seats)
+        - generic [ref=e291]: Full Deployment (1,000 seats)
+        - generic [ref=e295]: First Compliance Report
+      - table [ref=e298]:
+        - rowgroup [ref=e299]:
+          - row "Month Milestone" [ref=e300]:
+            - columnheader "Month" [ref=e301]
+            - columnheader "Milestone" [ref=e302]
+        - rowgroup [ref=e303]:
+          - row "1 Contract award, onboarding, access provisioned, kickoff with Managed Enforcement Specialist." [ref=e304]:
+            - cell "1" [ref=e305]
+            - cell "Contract award, onboarding, access provisioned, kickoff with Managed Enforcement Specialist." [ref=e306]
+          - 'row "1–2 Environment assessment: security architecture, compliance frameworks, and policy requirements gathered." [ref=e307]':
+            - cell "1–2" [ref=e308]
+            - 'cell "Environment assessment: security architecture, compliance frameworks, and policy requirements gathered." [ref=e309]'
+          - row "2–3 Initial enforcement documentation authored and reviewed with your team." [ref=e310]:
+            - cell "2–3" [ref=e311]
+            - cell "Initial enforcement documentation authored and reviewed with your team." [ref=e312]
+          - 'row "3 Pilot deployment: 50 developer seats, policy validation, and feedback cycle." [ref=e313]':
+            - cell "3" [ref=e314]
+            - 'cell "Pilot deployment: 50 developer seats, policy validation, and feedback cycle." [ref=e315]'
+          - row "4–5 Full deployment to all 1,000 seats; enforcement active across organization." [ref=e316]:
+            - cell "4–5" [ref=e317]
+            - cell "Full deployment to all 1,000 seats; enforcement active across organization." [ref=e318]
+          - row "6 First compliance and efficiency report delivered; policy refinement cycle begins." [ref=e319]:
+            - cell "6" [ref=e320]
+            - cell "First compliance and efficiency report delivered; policy refinement cycle begins." [ref=e321]
+      - generic [ref=e322]:
+        - generic [ref=e323]:
+          - heading "Next Steps" [level=3] [ref=e324]
+          - paragraph [ref=e325]: To move this proposal forward, Alchemist requests a 60-minute technical and business discussion with your team covering seat count, compliance frameworks, preferred contract vehicle, and any air-gap or private cloud requirements.
+          - generic [ref=e326]:
+            - strong [ref=e327]: "To schedule, contact:"
+            - generic [ref=e328]: Penn Hess
+            - generic [ref=e329]: CEO
+            - generic [ref=e330]: penn@alchemistfederal.com
+            - generic [ref=e331]: (989) 743-0294
+            - generic [ref=e332]: alchemistfederal.com
+        - generic [ref=e333]:
+          - heading "About Alchemist" [level=3] [ref=e334]
+          - generic "Alchemist mission panel" [ref=e335]:
+            - img "Alchemist" [ref=e336]
+            - paragraph [ref=e337]: Advanced software products for mission-critical environments.
+          - paragraph [ref=e338]: Alchemist builds advanced software products at the intersection of artificial intelligence, big data analytics, and cloud efficiency. Our team brings deep expertise deploying AI systems at enterprise scale, engineering high-throughput data pipelines for mission-critical workloads, and optimizing cloud architectures for performance and cost.
+          - paragraph [ref=e339]: Agent Enforcer is production-tested infrastructure. Cloud-native and deployable into air-gapped cloud environments, it delivers measurable AI governance, data-level audit trails, and compounding efficiency gains from Day 1.
+      - paragraph [ref=e340]: This proposal is valid for 60 days from the date of delivery. Pricing is subject to final scope confirmation. This document is Alchemist Proprietary and Confidential - not for distribution outside of CIA.
+    - generic [ref=e341]:
+      - img "Alchemist" [ref=e342]
+      - generic [ref=e343]: © 2026 Alchemist. All rights reserved.
+      - strong [ref=e344]: Confidential - Vendor Proprietary
