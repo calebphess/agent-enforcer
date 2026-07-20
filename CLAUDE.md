@@ -63,8 +63,11 @@ npm run deploy:enforcer                # deploy enforcement infrastructure
 npm run deploy:demo                    # deploy 2-instance demo
 npm run build:rpm                      # build RPM (starts EC2, uploads to S3, self-destructs)
 npm run deploy:all                     # deploy all 3 stacks
+npm run deploy:all:demo                # all 3 stacks, interactive demo + public console at demo.agent-enforcer.com
 npm run destroy:all                    # destroy all stacks (clean slate)
 ```
+
+`cdk synth`/`deploy` build the admin UI (`ui/` Next.js static export) as part of asset bundling — node + network required; pnpm runs via `npx -y pnpm@10` with a Docker `node:22` fallback.
 
 **Dev deploy policy**: In this dev environment, any CDK infrastructure update should be preceded by `npm run destroy:all` for a clean slate. Never assume partial state is safe — always nuke and redeploy in dev.
 
@@ -72,7 +75,7 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 `https://aws.amazon.com/marketplace/pp?sku=3qk9e6x2ni81uiqnorll45r3f`
 
 ### Stacks
-- `AgentEnforcerStack` — S3 buckets (source, dist, admin UI) + config-generator Lambda + DynamoDB license and documents tables + API Gateway (license API + `/admin` API) + Secrets Manager config
+- `AgentEnforcerStack` — S3 buckets (source, dist, admin UI) + config-generator Lambda + DynamoDB license and documents tables + API Gateway (license API + `/admin` API) + Secrets Manager config + console DNS (private hosted zone by default; CloudFront + ACM + public Route 53 records with `-c uiDomain=...`)
 - `DemoStack` — 2 Rocky Linux EC2 instances, self-destruct Lambda, analysis Lambda, results bucket
 - `RpmBuilderStack` — builds and publishes the RPM via EC2
 
@@ -81,7 +84,7 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 |-----------|---------|---------|
 | `config-generator/` | S3 PUT + delete on `enforcement-source` | Calls Bedrock to convert enforcement doc → `.claude/` file bundle, writes to `enforcement-dist/claude-code/latest/`; honors the claude-code SETTINGS toggle (fail-open) and auto-registers direct S3 uploads in the documents table |
 | `license/` | API Gateway POST | Handles `/agent-enforcer/register` and `/agent-enforcer/sync` |
-| `admin/` | API Gateway (all `/admin/*` routes) | Web console backend: login (secret-backed creds, defaults `admin`/`password`), documents CRUD + presigned uploads, dashboard stats, agents list, assistant toggles |
+| `admin/` | API Gateway (all `/admin/*` routes) | Web console backend: login (secret-backed creds, defaults `admin`/`password`), documents CRUD + presigned uploads/downloads, dashboard stats, agents list + deregistration (deactivates license, frees the slot), assistant toggles, bundle viewer (list/read generated configs in the dist bucket) |
 | `self-destruct/` | Function URL (HTTP POST) | Terminates a tagged demo EC2 instance when it calls in |
 | `analysis/` | S3 PUT suffix `completed` on `demo-results` | Waits for both instances under a base prefix to finish, calls Bedrock for comparison, writes `<base>results.md` (root for the auto demo, `runs/<run-id>/` for interactive runs) |
 
@@ -91,13 +94,13 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 | `agent-enforcer-source-<account>` | Private | Upload enforcement docs here — triggers Lambda |
 | `agent-enforcer-dist-<account>` | **Private** | Configs distributed via presigned URLs from license API |
 | `agent-enforcer-results-<account>` | Public read | Demo instance outputs + `results.md` |
-| `agent-enforcer-ui-<account>` | Public read (website) | Admin console static site; name overridable via cdk context `uiBucketName`; contents deployed from `ui/` |
+| UI bucket (see naming rule) | Public read (website) | Admin console static site, built from `ui/` at synth. Named `ui.<uiInternalDomain>` in private mode (S3 virtual hosting requires host == bucket name), `agent-enforcer-ui-<account>` in public mode; `uiBucketName` context overrides. Mode switches replace the bucket — fine under destroy-first dev policy |
 | `agent-enforcer-rpm` | Public read | Pre-existing bucket for hosting built RPMs |
 
 ### API Gateway
 - Base URL output: `ApiEndpoint` CDK output (used by demo instances, the admin UI, and manual testing)
 - Agent routes: `POST /agent-enforcer/register`, `POST /agent-enforcer/sync`
-- Admin routes (Bearer-token auth except login): `POST /admin/login`, `GET|POST /admin/documents`, `PUT|DELETE /admin/documents/{id}`, `POST /admin/documents/{id}/upload-url`, `GET /admin/stats`, `GET /admin/agents`, `GET|PUT /admin/assistants`
+- Admin routes (Bearer-token auth except login): `POST /admin/login`, `GET|POST /admin/documents`, `PUT|DELETE /admin/documents/{id}`, `POST /admin/documents/{id}/upload-url`, `POST /admin/documents/{id}/download-url`, `GET /admin/stats`, `GET /admin/agents`, `DELETE /admin/agents/{id}`, `GET|PUT /admin/assistants`, `GET /admin/assistants/{assistant}/bundle`, `GET /admin/assistants/{assistant}/bundle/{path+}` (greedy — nested bundle paths; Lambda unquotes)
 - CORS is API-wide (GET/POST/PUT/DELETE + Authorization header) for the browser UI
 - Default endpoint in agent: `https://alchemistfederal.com/agent-enforcer`
 
@@ -113,8 +116,12 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 
 ### Admin Web UI
 - Login defaults `admin`/`password` — override via `admin_username`/`admin_password` (+ optional `admin_session_secret`) in the `agent-enforcer/config` secret. Defaults live in Lambda code because a deployed secret never picks up `generateSecretString` template changes.
-- `UiUrl` CDK output → S3 website URL (HTTP-only; CloudFront is the prod path)
-- Frontend workflow: paste `docs/ui/v0-prompt.md` into V0, static-export the result into `ui/`, redeploy
+- `ui/` is the checked-in Next.js 16 source (pnpm, static export, `trailingSlash: true`). CDK bundling builds it at synth — no manual export step. Local dev: `cd ui && NEXT_PUBLIC_USE_MOCKS=true npx -y pnpm@10 dev` (mock data) or set `NEXT_PUBLIC_API_BASE` to hit a deployed API (CORS is open).
+- API base reaches the browser via a deploy-time `config.js` (`window.__AE_CONFIG__.apiBase`, written by BucketDeployment `Source.data`) — no rebuild per environment; `lib/api.ts` resolves it lazily.
+- **Serving modes** (context-driven, one website bucket):
+  - *Private (default)*: Route 53 **private** hosted zone `uiInternalDomain` (default `agent-enforcer.internal`, ~$0.50/mo) anchored to a $0 micro-VPC (`-c uiVpcId` to associate an existing VPC), `ui.<domain>` CNAME → S3 website endpoint. The name resolves **only inside associated VPCs** — from a laptop use the `UiWebsiteEndpoint` output. Customers point their own DNS/resolvers at the zone or CNAME the website endpoint.
+  - *Public* (`-c uiDomain=demo.agent-enforcer.com`): CloudFront + ACM cert (DNS-validated in the parent public zone via `fromLookup` — requires the zone in-account; first deploy waits a few minutes on validation) + A/AAAA aliases. `UiUrl` → `https://<uiDomain>`. us-east-1 only.
+- `UiUrl` output = mode-appropriate console URL; `UiWebsiteEndpoint` output = raw S3 website URL (always reachable, HTTP).
 
 ### Future prod deploy considerations
 Current stacks use `RemovalPolicy.DESTROY` and `autoDeleteObjects: true` — dev-only. For a future prod stack:
@@ -216,14 +223,15 @@ Any `*.md` upload to the source bucket triggers the Lambda, which reads **all** 
 - `cdk/assets/default-enforcement.md` — default policy seeded into source bucket on first deploy
 - `cdk/lib/lambda/license/index.py` — register + sync endpoint logic
 - `cdk/lib/lambda/admin/index.py` — admin console API (auth, documents, stats, toggles)
-- `docs/ui/v0-prompt.md` — copy-pasteable V0 prompt for the admin console frontend
-- `ui/` — static admin site deployed to the UI bucket (placeholder until the V0 export lands)
+- `docs/ui/v0-prompt.md` — V0 design spec + API contract for the admin console frontend
+- `ui/` — admin console Next.js source (V0 export, checked in); built at synth and deployed to the UI bucket
+- `ui/lib/api.ts` — the console's single API layer (runtime config, auth, mocks)
 - `demo/enforcement-doc-core.md` — demo enforcement doc (upload manually to trigger generation)
 - `demo/system-spec.md` — task given to both demo instances (auto mode)
 - `demo/demo-prompt.sh` — interactive-mode wrapper (per-prompt run, live stream, per-run upload)
 - `demo/demo-stream-filter.py` — renders Claude Code stream-json as readable demo output
 - `rpm/SOURCES/agent-enforcer` — main bash script (all CLI commands + daemon loop)
-- `tests/lambda/` — Lambda pytest suites (47 tests: license 18, admin 19, config-generator 6, analysis 4)
+- `tests/lambda/` — Lambda pytest suites (61 tests: license 18, admin 33, config-generator 6, analysis 4)
 - `tests/agent/test_agent.sh` — agent bash test suite (13 tests)
 
 ## Sales & Legal Documents (`docs/sales/`)

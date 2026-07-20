@@ -145,23 +145,41 @@ aws s3 ls s3://agent-enforcer-dist-$(aws sts get-caller-identity --query Account
 
 ## Admin Console
 
-A static web console deploys with `AgentEnforcerStack` to the
-`agent-enforcer-ui-<account>` bucket (override the name with
-`-c uiBucketName=<name>`). The `UiUrl` stack output is the site URL.
+The web console source lives in `ui/` (Next.js static export, originally
+generated with Vercel V0 from `docs/ui/v0-prompt.md`). `cdk synth`/`deploy`
+build it automatically and publish it with `AgentEnforcerStack`.
 
 - **Login**: defaults to `admin` / `password`. Override with `admin_username`
   / `admin_password` keys in the `agent-enforcer/config` secret.
+- **Dashboard**: license usage vs. limit, registered agents, document count,
+  assistants enforcing.
 - **Documents**: upload enforcement `.md` docs (name auto-fills from the
-  filename), edit descriptions, soft-delete with automatic bundle
-  regeneration. Docs uploaded directly via `aws s3 cp` are auto-registered.
-- **Dashboard**: license usage vs. limit, registered agents, document count.
+  filename), edit descriptions, download originals, soft-delete with
+  automatic bundle regeneration. Docs uploaded directly via `aws s3 cp` are
+  auto-registered.
+- **Fleet**: every registered agent with last check-in; de-register an agent
+  to deactivate its license and free the slot (its next sync is refused).
 - **Assistants**: enable/disable config generation per coding assistant
   (Claude Code live today; Kiro, Cursor, and GitHub Copilot toggles are
-  forward-looking).
+  forward-looking), plus a bundle viewer showing the generated files.
 
-The frontend is generated with Vercel V0: paste `docs/ui/v0-prompt.md` into
-v0.dev, static-export the result into `ui/`, and redeploy. Until then the
-bucket serves a branded placeholder page.
+**Where it's served** (one S3 website bucket, two modes):
+
+- *Private DNS (default)*: the stack creates a Route 53 **private** hosted
+  zone (`agent-enforcer.internal` by default, `-c uiInternalDomain=<domain>`
+  to change) with `ui.<domain>` pointing at the bucket's website endpoint —
+  self-contained DNS for customer accounts that don't use public Route 53.
+  The name resolves only inside VPCs associated with the zone (`-c uiVpcId`
+  associates yours at deploy); the `UiWebsiteEndpoint` output is the direct
+  URL that always works.
+- *Public domain* (`-c uiDomain=demo.agent-enforcer.com`, used by
+  `npm run deploy:all:demo` and `deploy:demo:interactive`): CloudFront with
+  an ACM certificate and Route 53 alias records in your public hosted zone —
+  HTTPS at the custom domain in the `UiUrl` output.
+
+**Local frontend dev**: `cd ui && NEXT_PUBLIC_USE_MOCKS=true npx -y pnpm@10 dev`
+for mock data, or set `NEXT_PUBLIC_API_BASE` to a deployed `ApiEndpoint` to
+work against the real backend (CORS is already open).
 
 ---
 

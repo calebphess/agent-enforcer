@@ -9,10 +9,14 @@ Serves the /admin/* routes of the HTTP API for the static admin UI:
   PUT    /admin/documents/{id}              — update name/description
   DELETE /admin/documents/{id}              — soft delete + remove source object
   POST   /admin/documents/{id}/upload-url   — fresh presigned PUT (re-upload)
+  POST   /admin/documents/{id}/download-url — presigned GET on the source doc
   GET    /admin/stats                       — dashboard counters
   GET    /admin/agents                      — registered agents (license registry)
+  DELETE /admin/agents/{id}                 — deregister agent (release license)
   GET    /admin/assistants                  — per-assistant generation toggles
   PUT    /admin/assistants                  — update toggles
+  GET    /admin/assistants/{assistant}/bundle          — list generated bundle files
+  GET    /admin/assistants/{assistant}/bundle/{path+}  — read one bundle file
 
 Auth: admin_username/admin_password come from the config secret, defaulting to
 admin/password when the keys are absent (the deployed secret never picks up
@@ -34,8 +38,10 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from urllib.parse import unquote
 
 import boto3
+from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -62,7 +68,8 @@ def handler(event: dict, context: Any) -> dict:
     if not username:
         return _resp(401, {'error': 'Missing or invalid authorization token'})
 
-    doc_id = (event.get('pathParameters') or {}).get('id', '')
+    params = event.get('pathParameters') or {}
+    doc_id = params.get('id', '')
 
     if route == 'GET /admin/documents':
         return _list_documents()
@@ -74,14 +81,22 @@ def handler(event: dict, context: Any) -> dict:
         return _delete_document(doc_id, username)
     if route == 'POST /admin/documents/{id}/upload-url':
         return _document_upload_url(doc_id)
+    if route == 'POST /admin/documents/{id}/download-url':
+        return _document_download_url(doc_id)
     if route == 'GET /admin/stats':
         return _stats()
     if route == 'GET /admin/agents':
         return _agents()
+    if route == 'DELETE /admin/agents/{id}':
+        return _deregister_agent(doc_id)
     if route == 'GET /admin/assistants':
         return _resp(200, {'assistants': _read_assistants()})
     if route == 'PUT /admin/assistants':
         return _put_assistants(body)
+    if route == 'GET /admin/assistants/{assistant}/bundle':
+        return _bundle_list(params.get('assistant', ''))
+    if route == 'GET /admin/assistants/{assistant}/bundle/{path+}':
+        return _bundle_file(params.get('assistant', ''), params.get('path', ''))
 
     return _resp(404, {'error': f'Unknown route: {route}'})
 
@@ -282,6 +297,18 @@ def _document_upload_url(doc_id: str) -> dict:
     })
 
 
+def _document_download_url(doc_id: str) -> dict:
+    item = _documents_table().get_item(Key={'id': doc_id}).get('Item')
+    if not item or item.get('id') == SETTINGS_ID or item.get('deleted'):
+        return _resp(404, {'error': 'Document not found'})
+    url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': os.environ['SOURCE_BUCKET'], 'Key': item['filename']},
+        ExpiresIn=PRESIGNED_EXPIRY,
+    )
+    return _resp(200, {'download_url': url})
+
+
 def _presigned_put(filename: str) -> str:
     return s3_client.generate_presigned_url(
         'put_object',
@@ -341,6 +368,115 @@ def _agents() -> dict:
 
     agents.sort(key=lambda a: a.get('last_used_date', ''), reverse=True)
     return _resp(200, {'agents': agents, 'count': len(agents)})
+
+
+def _deregister_agent(id_str: str) -> dict:
+    try:
+        agent_id = int(id_str)
+    except (TypeError, ValueError):
+        return _resp(404, {'error': 'Agent not found'})
+
+    table = dynamodb.Table(os.environ['LICENSE_TABLE'])
+    record = None
+    kwargs = {}
+    while record is None:
+        page = table.scan(**kwargs)
+        for item in page.get('Items', []):
+            if item.get('license_id') == 'COUNTER':
+                continue
+            if 'id' in item and int(item['id']) == agent_id:
+                record = item
+                break
+        if 'LastEvaluatedKey' not in page:
+            break
+        kwargs['ExclusiveStartKey'] = page['LastEvaluatedKey']
+
+    if not record or not record.get('active'):
+        return _resp(404, {'error': 'Agent not found or already deregistered'})
+
+    # Deactivate atomically — same #act alias + condition as the license
+    # Lambda's transfer path ('active' is a DynamoDB reserved word)
+    try:
+        table.update_item(
+            Key={'license_id': record['license_id']},
+            UpdateExpression='SET #act = :false',
+            ConditionExpression='#act = :true',
+            ExpressionAttributeNames={'#act': 'active'},
+            ExpressionAttributeValues={':false': False, ':true': True},
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            return _resp(404, {'error': 'Agent not found or already deregistered'})
+        raise
+
+    # Release the license slot; conditional floor keeps the counter at >= 0
+    # even if counts ever drift
+    try:
+        table.update_item(
+            Key={'license_id': 'COUNTER'},
+            UpdateExpression='ADD active_count :neg',
+            ConditionExpression='active_count >= :one',
+            ExpressionAttributeValues={':neg': -1, ':one': 1},
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+
+    print(f"Agent {agent_id} deregistered; license {record['license_id']} deactivated")
+    return _resp(200, {'id': agent_id})
+
+
+# ---------------------------------------------------------------------------
+# Bundle inspection — generated configs under <assistant>/latest/ in the
+# dist bucket
+# ---------------------------------------------------------------------------
+
+def _bundle_list(assistant: str) -> dict:
+    if assistant not in KNOWN_ASSISTANTS:
+        return _resp(404, {'error': f'Unknown assistant: {assistant}'})
+
+    prefix = f'{assistant}/latest/'
+    files = []
+    kwargs = {'Bucket': os.environ['DIST_BUCKET'], 'Prefix': prefix}
+    while True:
+        page = s3_client.list_objects_v2(**kwargs)
+        for obj in page.get('Contents', []):
+            rel = obj['Key'][len(prefix):]
+            if not rel:
+                continue
+            files.append({
+                'path': rel,
+                'size': int(obj['Size']),
+                'updated': obj['LastModified'].strftime('%Y-%m-%dT%H:%M:%SZ'),
+            })
+        if not page.get('IsTruncated'):
+            break
+        kwargs['ContinuationToken'] = page['NextContinuationToken']
+
+    files.sort(key=lambda f: f['path'])
+    return _resp(200, {'assistant': assistant, 'files': files})
+
+
+def _bundle_file(assistant: str, file_path: str) -> dict:
+    if assistant not in KNOWN_ASSISTANTS:
+        return _resp(404, {'error': f'Unknown assistant: {assistant}'})
+
+    # The UI percent-encodes the path and HTTP API %2F decoding has varied
+    # across gateway types — unquote is idempotent here (bundle filenames
+    # never contain '%')
+    file_path = unquote(file_path or '')
+    if not file_path or file_path.startswith('/') or '..' in file_path.split('/'):
+        return _resp(404, {'error': 'Bundle file not found'})
+
+    try:
+        obj = s3_client.get_object(
+            Bucket=os.environ['DIST_BUCKET'],
+            Key=f'{assistant}/latest/{file_path}',
+        )
+    except s3_client.exceptions.NoSuchKey:
+        return _resp(404, {'error': 'Bundle file not found'})
+    content = obj['Body'].read().decode('utf-8', errors='replace')
+    return _resp(200, {'path': file_path, 'content': content})
 
 
 # ---------------------------------------------------------------------------

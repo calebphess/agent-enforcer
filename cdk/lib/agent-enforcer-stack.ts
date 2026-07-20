@@ -1,10 +1,18 @@
+import { execSync } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
@@ -220,17 +228,23 @@ export class AgentEnforcerStack extends cdk.Stack {
         LICENSE_TABLE: licenseTable.tableName,
         DOCUMENTS_TABLE: documentsTable.tableName,
         SOURCE_BUCKET: sourceBucket.bucketName,
+        DIST_BUCKET: distBucket.bucketName,
         CONFIG_SECRET_ARN: configSecret.secretArn,
       },
     });
 
     documentsTable.grantReadWriteData(adminFn);
-    licenseTable.grantReadData(adminFn);
+    // Write needed for agent deregistration (deactivate license + counter)
+    licenseTable.grantReadWriteData(adminFn);
     configSecret.grantRead(adminFn);
-    // Presigned upload URLs are signed with the Lambda role's credentials, so
-    // the role itself needs put; document deletes remove the source object
+    // Presigned URLs are signed with the Lambda role's credentials, so the
+    // role itself needs put (uploads) and read (downloads); document deletes
+    // remove the source object
     sourceBucket.grantPut(adminFn);
     sourceBucket.grantDelete(adminFn);
+    sourceBucket.grantRead(adminFn);
+    // Bundle viewer lists + reads generated configs
+    distBucket.grantRead(adminFn);
 
     const adminIntegration = new apigwv2int.HttpLambdaIntegration('AdminIntegration', adminFn);
     const adminRoutes: Record<string, apigwv2.HttpMethod[]> = {
@@ -238,24 +252,43 @@ export class AgentEnforcerStack extends cdk.Stack {
       '/admin/documents': [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       '/admin/documents/{id}': [apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE],
       '/admin/documents/{id}/upload-url': [apigwv2.HttpMethod.POST],
+      '/admin/documents/{id}/download-url': [apigwv2.HttpMethod.POST],
       '/admin/stats': [apigwv2.HttpMethod.GET],
       '/admin/agents': [apigwv2.HttpMethod.GET],
+      '/admin/agents/{id}': [apigwv2.HttpMethod.DELETE],
       '/admin/assistants': [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT],
+      '/admin/assistants/{assistant}/bundle': [apigwv2.HttpMethod.GET],
+      // Greedy — bundle paths nest (skills/foo.md); the Lambda unquotes
+      '/admin/assistants/{assistant}/bundle/{path+}': [apigwv2.HttpMethod.GET],
     };
     for (const [routePath, methods] of Object.entries(adminRoutes)) {
       httpApi.addRoutes({ path: routePath, methods, integration: adminIntegration });
     }
 
-    // Static admin console — bucket name comes from config (cdk context key
-    // `uiBucketName`); contents are the V0 static export dropped into ui/
-    // (placeholder page until then). Same public-read dev posture as the demo
-    // results bucket; CloudFront is the prod path for HTTPS.
+    // Static admin console — ui/ holds the Next.js source; CDK bundling builds
+    // the static export at synth. Two serving modes, one website bucket:
+    //
+    //  - Private (default): a Route 53 PRIVATE hosted zone (`uiInternalDomain`,
+    //    default agent-enforcer.internal) anchored to a $0 micro-VPC (or an
+    //    existing VPC via `-c uiVpcId`), with ui.<domain> CNAME'd to the S3
+    //    website endpoint. S3 virtual hosting requires host == bucket name, so
+    //    the bucket is named ui.<domain> in this mode. The name only resolves
+    //    inside associated VPCs — the UiWebsiteEndpoint output always works.
+    //  - Public (`-c uiDomain=demo.agent-enforcer.com`): CloudFront + ACM cert
+    //    DNS-validated in the parent public zone + A/AAAA aliases.
+    //
+    // Same public-read dev posture as the demo results bucket either way.
+    const uiDomain: string | undefined = this.node.tryGetContext('uiDomain');
+    const internalDomain: string =
+      this.node.tryGetContext('uiInternalDomain') ?? 'agent-enforcer.internal';
     const uiBucketName =
-      this.node.tryGetContext('uiBucketName') ?? `agent-enforcer-ui-${this.account}`;
+      this.node.tryGetContext('uiBucketName') ??
+      (uiDomain ? `agent-enforcer-ui-${this.account}` : `ui.${internalDomain}`);
+
     const uiBucket = new s3.Bucket(this, 'AdminUi', {
       bucketName: uiBucketName,
       websiteIndexDocument: 'index.html',
-      websiteErrorDocument: 'index.html',  // SPA fallback for client-side routes
+      websiteErrorDocument: '404.html',  // emitted by the Next static export
       blockPublicAccess: new s3.BlockPublicAccess({
         blockPublicAcls: false,
         blockPublicPolicy: false,
@@ -267,9 +300,115 @@ export class AgentEnforcerStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
+    let distribution: cloudfront.Distribution | undefined;
+    if (uiDomain) {
+      if (this.region !== 'us-east-1') {
+        throw new Error('uiDomain requires us-east-1 (CloudFront certificates live there)');
+      }
+      const parentZoneName = uiDomain.split('.').slice(1).join('.');
+      if (!parentZoneName.includes('.')) {
+        throw new Error(
+          `uiDomain must be a subdomain of a hosted zone you own (got '${uiDomain}', e.g. demo.agent-enforcer.com)`,
+        );
+      }
+      const publicZone = route53.HostedZone.fromLookup(this, 'UiPublicZone', {
+        domainName: parentZoneName,
+      });
+      const certificate = new acm.Certificate(this, 'UiCertificate', {
+        domainName: uiDomain,
+        validation: acm.CertificateValidation.fromDns(publicZone),
+      });
+      distribution = new cloudfront.Distribution(this, 'UiDistribution', {
+        defaultBehavior: {
+          // Website endpoint (not REST) so S3 keeps handling directory index
+          // documents and the 404 error page
+          origin: new origins.S3StaticWebsiteOrigin(uiBucket),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        },
+        domainNames: [uiDomain],
+        certificate,
+      });
+      const aliasTarget = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution));
+      new route53.ARecord(this, 'UiAliasRecord', {
+        zone: publicZone,
+        recordName: uiDomain,
+        target: aliasTarget,
+      });
+      new route53.AaaaRecord(this, 'UiAliasRecordV6', {
+        zone: publicZone,
+        recordName: uiDomain,
+        target: aliasTarget,
+      });
+    } else {
+      const uiVpcId: string | undefined = this.node.tryGetContext('uiVpcId');
+      const dnsVpc = uiVpcId
+        ? ec2.Vpc.fromLookup(this, 'UiDnsVpc', { vpcId: uiVpcId })
+        : new ec2.Vpc(this, 'UiDnsVpc', {
+            // DNS anchor only — no NAT/IGW/endpoints, so it bills nothing.
+            // Customers associate their real VPCs with the zone post-deploy.
+            ipAddresses: ec2.IpAddresses.cidr('10.255.255.0/28'),
+            maxAzs: 1,
+            natGateways: 0,
+            subnetConfiguration: [
+              { name: 'dns', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 28 },
+            ],
+            restrictDefaultSecurityGroup: false,
+          });
+      const internalZone = new route53.PrivateHostedZone(this, 'UiInternalZone', {
+        zoneName: internalDomain,
+        vpc: dnsVpc,
+      });
+      new route53.CnameRecord(this, 'UiInternalRecord', {
+        zone: internalZone,
+        recordName: 'ui',
+        domainName: uiBucket.bucketWebsiteDomainName,
+      });
+    }
+
+    // Build the Next.js static export at synth time. Local bundling runs pnpm
+    // straight from npx; the Docker image is the fallback (e.g. no node on
+    // PATH). `exclude` keeps the asset hash driven by source files only.
+    const uiDir = path.join(__dirname, '../../ui');
+    const uiBuildCmds = [
+      'npx -y pnpm@10 install --frozen-lockfile',
+      'npx -y pnpm@10 run build',
+    ];
+    const uiSource = s3deploy.Source.asset(uiDir, {
+      exclude: ['node_modules', '.next', 'out'],
+      bundling: {
+        image: cdk.DockerImage.fromRegistry('public.ecr.aws/docker/library/node:22'),
+        command: ['bash', '-c', [...uiBuildCmds, 'cp -a out/. /asset-output/'].join(' && ')],
+        environment: { NEXT_TELEMETRY_DISABLED: '1' },
+        local: {
+          tryBundle(outputDir: string): boolean {
+            try {
+              for (const cmd of uiBuildCmds) {
+                execSync(cmd, {
+                  cwd: uiDir,
+                  stdio: 'inherit',
+                  env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' },
+                });
+              }
+              fs.cpSync(path.join(uiDir, 'out'), outputDir, { recursive: true });
+              return true;
+            } catch (err) {
+              console.warn(`Local UI build failed, falling back to Docker: ${err}`);
+              return false;
+            }
+          },
+        },
+      },
+    });
+
     new s3deploy.BucketDeployment(this, 'AdminUiDeployment', {
-      sources: [s3deploy.Source.asset(path.join(__dirname, '../../ui'))],
+      sources: [
+        uiSource,
+        // Runtime config — listed after the asset so it wins over the
+        // public/config.js dev stub
+        s3deploy.Source.data('config.js', `window.__AE_CONFIG__={apiBase:"${httpApi.url}"}`),
+      ],
       destinationBucket: uiBucket,
+      ...(distribution ? { distribution, distributionPaths: ['/*'] } : {}),
     });
 
     // -------------------------------------------------------------------------
@@ -286,8 +425,12 @@ export class AgentEnforcerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ConfigSecretArn', { value: configSecret.secretArn });
     new cdk.CfnOutput(this, 'DocumentsTableName', { value: documentsTable.tableName });
     new cdk.CfnOutput(this, 'UiUrl', {
-      value: uiBucket.bucketWebsiteUrl,
+      value: uiDomain ? `https://${uiDomain}` : `http://ui.${internalDomain}`,
       description: 'Admin console URL (default login admin/password — override in the config secret)',
+    });
+    new cdk.CfnOutput(this, 'UiWebsiteEndpoint', {
+      value: uiBucket.bucketWebsiteUrl,
+      description: 'Direct S3 website endpoint — always reachable; the .internal name resolves only inside associated VPCs',
     });
   }
 }

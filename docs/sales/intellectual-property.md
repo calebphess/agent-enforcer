@@ -29,6 +29,8 @@ A system architecture in which a central policy authority (S3-compatible object 
 - The use of a polling-based daemon service to enforce AI agent behavior at the system level (as opposed to application-level or user-level configuration)
 - Automatic application of policy to any AI coding session initiated by any user on the host, regardless of which user account initiates the session
 - Version-controlled policy distribution enabling auditability of which policy was active at time of any given AI session
+- Operator-driven revocation through the same channel: de-registering an agent from the central control plane deactivates its license, and the endpoint's next sync is refused — enforcement withdrawal propagates without touching the endpoint
+- Control-plane inspection of the exact generated enforcement artifacts (bundle viewer) — the operator audits what endpoints will receive before and after distribution
 
 **Distinguishing from prior art:**
 Prior art in AI configuration (e.g., `.env` files, application config) is user-managed and session-specific. This system enforces policy at the OS service level independent of user action, across all users on a host, with automatic propagation of updates from a central authority.
@@ -125,7 +127,7 @@ The following works are automatically protected by copyright upon creation (17 U
 | Agent Enforcer source code (all files in the repository) | Literary work (software) | Register as a single deposit; update registrations with major releases |
 | `agent-enforcer` bash script (the enforcement daemon) | Literary work (software) | Core IP — high priority |
 | Lambda function source code (config-generator, license, admin, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
-| Admin console web UI (design specification and generated site) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`) and the console's distinctive navy/gold visual identity |
+| Admin console web UI (design specification and application source) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`), the shipped Next.js application in `ui/` (dashboard, documents, fleet management with license deregistration, assistants + bundle viewer), and the console's distinctive navy/gold visual identity |
 | CDK stack definitions (TypeScript) | Literary work (software) | Infrastructure-as-code is copyrightable |
 | RPM spec file and packaging scripts | Literary work (software) | |
 | slicksheet.md / offer-letter.md marketing documents | Literary work | Register once finalized |

@@ -24,6 +24,7 @@ ADMIN_INDEX = os.path.join(os.path.dirname(__file__), '../../cdk/lib/lambda/admi
 LICENSE_TABLE = 'AgentEnforcerLicenses'
 DOCUMENTS_TABLE = 'AgentEnforcerDocuments'
 SOURCE_BUCKET = 'agent-enforcer-source-test'
+DIST_BUCKET = 'agent-enforcer-dist-test'
 SECRET_NAME = 'agent-enforcer/config'
 
 
@@ -42,6 +43,7 @@ def aws_resources(monkeypatch):
     monkeypatch.setenv('LICENSE_TABLE', LICENSE_TABLE)
     monkeypatch.setenv('DOCUMENTS_TABLE', DOCUMENTS_TABLE)
     monkeypatch.setenv('SOURCE_BUCKET', SOURCE_BUCKET)
+    monkeypatch.setenv('DIST_BUCKET', DIST_BUCKET)
 
     with mock_aws():
         ddb = boto3.resource('dynamodb', region_name='us-east-1')
@@ -62,6 +64,7 @@ def aws_resources(monkeypatch):
 
         s3 = boto3.client('s3', region_name='us-east-1')
         s3.create_bucket(Bucket=SOURCE_BUCKET)
+        s3.create_bucket(Bucket=DIST_BUCKET)
 
         sm = boto3.client('secretsmanager', region_name='us-east-1')
         secret = sm.create_secret(
@@ -285,6 +288,39 @@ def test_upload_url_for_missing_document_returns_404(aws_resources):
     assert resp['statusCode'] == 404
 
 
+def test_download_url_returns_presigned_get(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    doc_id = _create_document(m, token)['document']['id']
+
+    resp = m.handler(_event('POST /admin/documents/{id}/download-url', token=token,
+                            path_params={'id': doc_id}), None)
+    assert resp['statusCode'] == 200
+    url = json.loads(resp['body'])['download_url']
+    assert url.startswith('https://')
+    assert 'core-policy.md' in url
+
+
+def test_download_url_missing_document_returns_404(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('POST /admin/documents/{id}/download-url', token=token,
+                            path_params={'id': 'no-such-doc'}), None)
+    assert resp['statusCode'] == 404
+
+
+def test_download_url_soft_deleted_document_returns_404(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    doc_id = _create_document(m, token)['document']['id']
+    m.handler(_event('DELETE /admin/documents/{id}', token=token,
+                     path_params={'id': doc_id}), None)
+
+    resp = m.handler(_event('POST /admin/documents/{id}/download-url', token=token,
+                            path_params={'id': doc_id}), None)
+    assert resp['statusCode'] == 404
+
+
 # ---------------------------------------------------------------------------
 # Stats + agents
 # ---------------------------------------------------------------------------
@@ -335,6 +371,87 @@ def test_agents_lists_licenses_excluding_counter(aws_resources):
 
 
 # ---------------------------------------------------------------------------
+# Agent deregistration
+# ---------------------------------------------------------------------------
+
+def _seed_license(license_table, num_id, active=True):
+    license_table.put_item(Item={
+        'license_id': f'lic-{num_id}', 'id': num_id, 'user_id': f'user-{num_id}',
+        'agent_type': 'ROCKY9', 'agent_version': '0.3.0',
+        'machine_id': f'machine-{num_id}', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-19T00:00:00Z', 'active': active,
+    })
+
+
+def test_deregister_agent_deactivates_license_and_decrements_counter(aws_resources):
+    m = aws_resources['module']
+    license_table = aws_resources['license_table']
+    token = _login(m)
+
+    license_table.put_item(Item={'license_id': 'COUNTER', 'active_count': 2, 'total_count': 2})
+    _seed_license(license_table, 1)
+    _seed_license(license_table, 2)
+
+    resp = m.handler(_event('DELETE /admin/agents/{id}', token=token,
+                            path_params={'id': '1'}), None)
+    assert resp['statusCode'] == 200
+    assert json.loads(resp['body']) == {'id': 1}
+
+    assert license_table.get_item(Key={'license_id': 'lic-1'})['Item']['active'] is False
+    assert license_table.get_item(Key={'license_id': 'lic-2'})['Item']['active'] is True
+    counter = license_table.get_item(Key={'license_id': 'COUNTER'})['Item']
+    assert counter['active_count'] == 1
+
+
+def test_deregister_agent_missing_id_returns_404(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('DELETE /admin/agents/{id}', token=token,
+                            path_params={'id': '99'}), None)
+    assert resp['statusCode'] == 404
+
+
+def test_deregister_agent_already_inactive_returns_404(aws_resources):
+    m = aws_resources['module']
+    license_table = aws_resources['license_table']
+    token = _login(m)
+
+    license_table.put_item(Item={'license_id': 'COUNTER', 'active_count': 5, 'total_count': 5})
+    _seed_license(license_table, 1, active=False)
+
+    resp = m.handler(_event('DELETE /admin/agents/{id}', token=token,
+                            path_params={'id': '1'}), None)
+    assert resp['statusCode'] == 404
+    counter = license_table.get_item(Key={'license_id': 'COUNTER'})['Item']
+    assert counter['active_count'] == 5  # untouched
+
+
+def test_deregister_agent_non_numeric_id_returns_404(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('DELETE /admin/agents/{id}', token=token,
+                            path_params={'id': 'abc'}), None)
+    assert resp['statusCode'] == 404
+
+
+def test_deregister_agent_counter_never_goes_negative(aws_resources):
+    m = aws_resources['module']
+    license_table = aws_resources['license_table']
+    token = _login(m)
+
+    # Drifted state: an active license but a zero counter
+    license_table.put_item(Item={'license_id': 'COUNTER', 'active_count': 0, 'total_count': 1})
+    _seed_license(license_table, 1)
+
+    resp = m.handler(_event('DELETE /admin/agents/{id}', token=token,
+                            path_params={'id': '1'}), None)
+    assert resp['statusCode'] == 200
+    assert license_table.get_item(Key={'license_id': 'lic-1'})['Item']['active'] is False
+    counter = license_table.get_item(Key={'license_id': 'COUNTER'})['Item']
+    assert counter['active_count'] == 0  # floored, not -1
+
+
+# ---------------------------------------------------------------------------
 # Assistant toggles
 # ---------------------------------------------------------------------------
 
@@ -371,8 +488,95 @@ def test_put_assistants_persists_toggles(aws_resources):
     assert unknown['statusCode'] == 400
 
 
+# ---------------------------------------------------------------------------
+# Bundle inspection
+# ---------------------------------------------------------------------------
+
+def _seed_bundle(s3):
+    s3.put_object(Bucket=DIST_BUCKET, Key='claude-code/latest/CLAUDE.md', Body=b'# Enforced rules')
+    s3.put_object(Bucket=DIST_BUCKET, Key='claude-code/latest/settings.json', Body=b'{"hooks":{}}')
+    s3.put_object(Bucket=DIST_BUCKET, Key='claude-code/latest/skills/python.md', Body=b'# Python rules')
+
+
+def test_bundle_list_returns_files_with_metadata(aws_resources):
+    m = aws_resources['module']
+    _seed_bundle(aws_resources['s3'])
+    token = _login(m)
+
+    resp = m.handler(_event('GET /admin/assistants/{assistant}/bundle', token=token,
+                            path_params={'assistant': 'claude-code'}), None)
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    assert body['assistant'] == 'claude-code'
+    assert [f['path'] for f in body['files']] == ['CLAUDE.md', 'settings.json', 'skills/python.md']
+    for f in body['files']:
+        assert isinstance(f['size'], int) and f['size'] > 0
+        assert 'T' in f['updated'] and f['updated'].endswith('Z')
+
+
+def test_bundle_list_empty_for_assistant_without_pipeline(aws_resources):
+    m = aws_resources['module']
+    _seed_bundle(aws_resources['s3'])
+    token = _login(m)
+
+    resp = m.handler(_event('GET /admin/assistants/{assistant}/bundle', token=token,
+                            path_params={'assistant': 'kiro'}), None)
+    assert resp['statusCode'] == 200
+    assert json.loads(resp['body']) == {'assistant': 'kiro', 'files': []}
+
+
+def test_bundle_list_unknown_assistant_returns_404(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('GET /admin/assistants/{assistant}/bundle', token=token,
+                            path_params={'assistant': 'clippy'}), None)
+    assert resp['statusCode'] == 404
+
+
+def test_bundle_file_returns_content_and_decodes_encoded_slash(aws_resources):
+    m = aws_resources['module']
+    _seed_bundle(aws_resources['s3'])
+    token = _login(m)
+
+    for path_value in ('skills/python.md', 'skills%2Fpython.md'):
+        resp = m.handler(_event('GET /admin/assistants/{assistant}/bundle/{path+}', token=token,
+                                path_params={'assistant': 'claude-code', 'path': path_value}), None)
+        assert resp['statusCode'] == 200, path_value
+        body = json.loads(resp['body'])
+        assert body['path'] == 'skills/python.md'
+        assert body['content'] == '# Python rules'
+
+
+def test_bundle_file_missing_or_traversal_returns_404(aws_resources):
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    _seed_bundle(s3)
+    # An object outside the assistant prefix that traversal must not reach
+    s3.put_object(Bucket=DIST_BUCKET, Key='secret', Body=b'top secret')
+    token = _login(m)
+
+    for path_value in ('nope.md', '../../secret', '/CLAUDE.md', ''):
+        resp = m.handler(_event('GET /admin/assistants/{assistant}/bundle/{path+}', token=token,
+                                path_params={'assistant': 'claude-code', 'path': path_value}), None)
+        assert resp['statusCode'] == 404, path_value
+
+
 def test_unknown_route_returns_404(aws_resources):
     m = aws_resources['module']
     token = _login(m)
     resp = m.handler(_event('GET /admin/nope', token=token), None)
     assert resp['statusCode'] == 404
+
+
+def test_new_admin_routes_require_token(aws_resources):
+    m = aws_resources['module']
+    routes = [
+        ('DELETE /admin/agents/{id}', {'id': '1'}),
+        ('POST /admin/documents/{id}/download-url', {'id': 'some-doc'}),
+        ('GET /admin/assistants/{assistant}/bundle', {'assistant': 'claude-code'}),
+        ('GET /admin/assistants/{assistant}/bundle/{path+}',
+         {'assistant': 'claude-code', 'path': 'CLAUDE.md'}),
+    ]
+    for route, params in routes:
+        resp = m.handler(_event(route, path_params=params), None)
+        assert resp['statusCode'] == 401, route

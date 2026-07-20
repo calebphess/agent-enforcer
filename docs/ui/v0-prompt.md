@@ -1,11 +1,13 @@
 # V0 Prompt — Agent Enforcer Admin Console
 
 Copy everything below the line into [v0.dev](https://v0.dev) as a single prompt.
-When you're happy with the result, export it, run `next build`, and copy the
-contents of `out/` into this repo's `ui/` directory, then `npm run deploy:all`
-from `cdk/`. Point it at the real backend by setting `NEXT_PUBLIC_API_BASE` to
-the `ApiEndpoint` CDK output (no trailing slash) and turning off mock mode
-(see "Mock mode" section in the prompt).
+When you're happy with the result, export it and replace this repo's `ui/`
+**source** with it (CDK builds the static export at synth — no manual
+`next build`), then re-apply the repo integration tweaks: env-driven
+`USE_MOCKS` (`NEXT_PUBLIC_USE_MOCKS`), the lazy `apiBase()` reading
+`window.__AE_CONFIG__` from `/config.js`, `trailingSlash: true`, and the
+`/login/` redirect — see `ui/lib/api.ts` and CLAUDE.md "Admin Web UI".
+This document is also the canonical API contract for the console.
 
 ---
 
@@ -118,6 +120,13 @@ small `ShieldCheck` beside it. Then:
   Sorted by last check-in. Empty state: `Bot` icon + "No agents registered
   yet" + hint "Install the RPM and run `sudo agent-enforcer register`."
 
+### 3b. `/fleet` — Fleet
+Full agents page: the same table with pagination, a details view per agent,
+and a **De-register** action (confirm dialog: "This deactivates the agent's
+license and frees the slot — its next sync will be refused.") →
+`DELETE /admin/agents/{id}`, success toast "Agent de-registered — license
+released."
+
 ### 4. `/documents` — Documents
 Eyebrow `POLICY SOURCE`, heading "Enforcement Documents", subline muted:
 "Uploaded documents are compiled into enforcement bundles automatically."
@@ -161,6 +170,12 @@ revert on failure). Coming-soon toggles still persist but their card copy
 makes clear generation isn't live yet. When Claude Code is off, show a slim
 danger-tinted banner: "Claude Code generation is disabled — uploads will not
 produce new bundles."
+
+Each live assistant card has a **View bundle** action opening a viewer:
+file list from `GET /admin/assistants/{assistant}/bundle` on the left,
+selected file rendered as markdown on the right from
+`GET /admin/assistants/{assistant}/bundle/{path}` (URL-encode the path).
+Empty state when no files have been generated yet.
 
 ## API contract
 
@@ -218,6 +233,8 @@ under `/admin`. Every request except login and the presigned PUT sends
 
 `POST /admin/documents/{id}/upload-url` → 200 `{ "upload_url": "https://…", "upload_expires_in": 600 }` · 404
 
+`POST /admin/documents/{id}/download-url` → 200 `{ "download_url": "https://…" }` · 404 (missing or deleted)
+
 `GET /admin/stats`
 ```json
 { "active_licenses": 17, "total_licenses": 23, "max_licenses": 250,
@@ -238,9 +255,25 @@ under `/admin`. Every request except login and the presigned PUT sends
 
 `GET /admin/assistants` → 200 `{ "assistants": { "claude-code": true, "kiro": false, "cursor": false, "github-copilot": false } }`
 
+`DELETE /admin/agents/{id}` → 200 `{ "id": 23 }` · 404 (unknown or already
+inactive). Deactivates the license and frees the slot.
+
 `PUT /admin/assistants` — body `{ "assistants": { "cursor": true } }` (partial
 updates fine, booleans only) → 200 with the full resulting `assistants` map ·
 400 on unknown keys.
+
+`GET /admin/assistants/{assistant}/bundle`
+```json
+{ "assistant": "claude-code", "files": [
+  { "path": "CLAUDE.md", "size": 812, "updated": "2026-07-19T09:55:00Z" },
+  { "path": "skills/python-standards.md", "size": 1834, "updated": "2026-07-19T09:55:00Z" }
+] }
+```
+404 on unknown assistant; `files: []` for assistants with no pipeline yet.
+
+`GET /admin/assistants/{assistant}/bundle/{path}` — client URL-encodes `path`
+(nested paths like `skills/x.md` become one segment) → 200
+`{ "path": "skills/python-standards.md", "content": "…" }` · 404.
 
 ## Mock mode
 
@@ -248,7 +281,9 @@ Put ALL fetch logic in `lib/api.ts` behind a `USE_MOCKS` boolean (default
 `true` so the preview works instantly). Mock fixtures must match the sample
 JSON above exactly, with realistic latency (300–600ms) and a mock login that
 accepts admin/password. Switching to the real backend must be exactly two
-changes: set `USE_MOCKS = false` and provide `NEXT_PUBLIC_API_BASE`.
+changes: set `USE_MOCKS = false` and provide `NEXT_PUBLIC_API_BASE`. (In this
+repo those two switches are wired to `NEXT_PUBLIC_USE_MOCKS` and the
+deploy-time `/config.js` — see the header note.)
 
 Polish bar: loading skeletons on every data surface, toasts for all
 mutations, relative timestamps with full ISO on hover, empty states designed
