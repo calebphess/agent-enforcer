@@ -40,6 +40,9 @@ jobs:
       - name: Run agent tests
         run: bash tests/agent/test_agent.sh
 
+      - name: Syntax-check demo scripts
+        run: bash -n demo/demo-prompt.sh && python3 -m py_compile demo/demo-stream-filter.py
+
   cdk-synth:
     name: CDK synth validation
     runs-on: ubuntu-latest

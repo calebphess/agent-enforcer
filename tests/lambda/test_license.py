@@ -353,3 +353,54 @@ def test_sync_missing_license_id(aws_resources):
     }, None)
     assert resp['statusCode'] == 400
     assert 'license_id' in json.loads(resp['body'])['error'].lower()
+
+
+# ---------------------------------------------------------------------------
+# Sync — assistants toggles
+# ---------------------------------------------------------------------------
+
+def _create_documents_table():
+    """The shared fixture doesn't create the documents table — tests that need
+    SETTINGS create it inside the fixture's active moto backend."""
+    ddb = boto3.resource('dynamodb', region_name='us-east-1')
+    return ddb.create_table(
+        TableName='AgentEnforcerDocuments',
+        KeySchema=[{'AttributeName': 'id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
+        BillingMode='PAY_PER_REQUEST',
+    )
+
+
+def test_sync_returns_assistants_from_settings(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    table = _create_documents_table()
+    table.put_item(Item={'id': 'SETTINGS', 'assistants': {
+        'claude-code': True, 'kiro': True, 'cursor': False, 'github-copilot': False,
+    }})
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    assert 'files' in body
+    assert body['assistants'] == {
+        'claude-code': True, 'kiro': True, 'cursor': False, 'github-copilot': False,
+    }
+
+
+def test_sync_returns_default_assistants_when_settings_missing(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    _create_documents_table()  # table exists but holds no SETTINGS item
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    assert resp['statusCode'] == 200
+    assert json.loads(resp['body'])['assistants'] == {
+        'claude-code': True, 'kiro': False, 'cursor': False, 'github-copilot': False,
+    }

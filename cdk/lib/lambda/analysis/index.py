@@ -2,13 +2,16 @@
 Analysis Lambda
 
 Triggered by S3 PUT on the demo-results bucket (suffix: 'completed').
-Waits until both instance1 and instance2 have completed, then reads their
-generated project files, runs automated checks, calls Bedrock for narrative
-analysis, and writes results.md to the results bucket.
+Completion markers live at '<base>instanceN/completed', where base is ''
+for the auto-run demo layout or 'runs/<run-id>/' for interactive demo runs.
+Once both instances under a base have completed, reads their generated
+project files, runs automated checks, calls Bedrock for narrative analysis,
+and writes '<base>results.md' to the results bucket.
 """
 import json
 import os
 import re
+from urllib.parse import unquote_plus
 
 import boto3
 from botocore.exceptions import ClientError
@@ -19,47 +22,69 @@ bedrock = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION
 RESULTS_BUCKET = os.environ['RESULTS_BUCKET']
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
 
+# '<base>instanceN/completed' — base '' (auto demo) or 'runs/<id>/' (interactive).
+# Also rejects generated project files that happen to be named 'completed'
+# (their keys end in 'project/completed', which doesn't match the anchor).
+_MARKER_RE = re.compile(r'^(?P<base>.*)instance[12]/completed$')
+
 
 def handler(event, context):
-    """Generate results.md once both demo instances have completed."""
+    """Process completion markers, generating results per base prefix."""
+    bases = set()
+    for record in event.get('Records', []):
+        key = unquote_plus(record['s3']['object']['key'])
+        match = _MARKER_RE.match(key)
+        if match:
+            bases.add(match.group('base'))
+        else:
+            print(f"Ignoring non-marker key: {key}")
+    for base in sorted(bases):
+        _process(base)
+
+
+def _process(base: str) -> None:
+    """Generate {base}results.md once both instances under base have completed."""
     # Check both completion markers
     for instance in ('instance1', 'instance2'):
         try:
-            s3.head_object(Bucket=RESULTS_BUCKET, Key=f'{instance}/completed')
+            s3.head_object(Bucket=RESULTS_BUCKET, Key=f'{base}{instance}/completed')
         except ClientError:
-            print(f"{instance} not done yet — deferring analysis")
+            print(f"{base}{instance} not done yet — deferring analysis")
             return
 
     # Idempotency: skip if already generated
     try:
-        s3.head_object(Bucket=RESULTS_BUCKET, Key='results.md')
-        print("results.md already exists — skipping")
+        s3.head_object(Bucket=RESULTS_BUCKET, Key=f'{base}results.md')
+        print(f"{base}results.md already exists — skipping")
         return
     except ClientError:
         pass
 
-    instance1_files = _read_project_files('instance1')
-    instance2_files = _read_project_files('instance2')
+    instance1_files = _read_project_files(f'{base}instance1')
+    instance2_files = _read_project_files(f'{base}instance2')
 
     metrics1 = _check_patterns(instance1_files)
     metrics2 = _check_patterns(instance2_files)
 
-    meta1 = _read_meta('instance1')
-    meta2 = _read_meta('instance2')
-    metrics1.update(_token_metrics(meta1, 'instance1'))
-    metrics2.update(_token_metrics(meta2, 'instance2'))
+    meta1 = _read_meta(f'{base}instance1')
+    meta2 = _read_meta(f'{base}instance2')
+    metrics1.update(_token_metrics(meta1, f'{base}instance1'))
+    metrics2.update(_token_metrics(meta2, f'{base}instance2'))
 
-    analysis_text = _call_bedrock(instance1_files, instance2_files, metrics1, metrics2)
+    # Interactive runs record the operator's prompt in meta.txt
+    task = meta1.get('prompt') or meta2.get('prompt') or "the demo's fixed specification"
+
+    analysis_text = _call_bedrock(instance1_files, instance2_files, metrics1, metrics2, task)
 
     results_md = _build_results_md(metrics1, metrics2, analysis_text)
 
     s3.put_object(
         Bucket=RESULTS_BUCKET,
-        Key='results.md',
+        Key=f'{base}results.md',
         Body=results_md.encode('utf-8'),
         ContentType='text/markdown',
     )
-    print(f"Results written to s3://{RESULTS_BUCKET}/results.md")
+    print(f"Results written to s3://{RESULTS_BUCKET}/{base}results.md")
 
 
 def _read_project_files(instance_prefix: str) -> dict:
@@ -133,7 +158,8 @@ def _check_patterns(files: dict) -> dict:
     }
 
 
-def _call_bedrock(files1: dict, files2: dict, metrics1: dict, metrics2: dict) -> str:
+def _call_bedrock(files1: dict, files2: dict, metrics1: dict, metrics2: dict,
+                  task: str = "the demo's fixed specification") -> str:
     """Generate narrative analysis via Bedrock."""
     def summarize_files(files):
         lines = []
@@ -141,7 +167,7 @@ def _call_bedrock(files1: dict, files2: dict, metrics1: dict, metrics2: dict) ->
             lines.append(f"### {name}\n```\n{content[:1500]}\n```")
         return '\n'.join(lines)
 
-    prompt = f"""You are analyzing outputs from two AI coding sessions building a Task Manager REST API:
+    prompt = f"""You are analyzing outputs from two AI coding sessions given the identical task: {task}
 - Instance 1 (Control): Claude Code with NO enforcement
 - Instance 2 (Enforced): Claude Code WITH Agent Enforcer active (enforced coding standards and security rules)
 

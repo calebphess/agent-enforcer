@@ -7,6 +7,7 @@
     "synth": "npx cdk synth",
     "deploy:enforcer": "npx cdk deploy AgentEnforcerStack",
     "deploy:demo": "npx cdk deploy DemoStack",
+    "deploy:demo:interactive": "npx cdk deploy AgentEnforcerStack DemoStack --context demoMode=interactive",
     "build:rpm": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s)",
     "build:rpm:custom": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s) --context builderAmi=${AMI_ID}",
     "deploy:all": "npx cdk deploy --all --require-approval never",

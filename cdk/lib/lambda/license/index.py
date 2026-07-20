@@ -12,6 +12,8 @@ Handles two routes dispatched by API Gateway HTTP API:
     - Validates license (active + machine_id match)
     - Updates last_used_date
     - Lists dist bucket prefix claude-code/latest/ and returns presigned URLs per file
+    - Returns the per-assistant enforcement toggles (documents table SETTINGS item)
+      so agents can report what they enforce via `agent-enforcer describe`
 
 Environment variables are read at handler call time (not import time) so that tests
 can inject mocked values without import-order issues.
@@ -30,6 +32,9 @@ s3_client = boto3.client('s3')
 sm_client = boto3.client('secretsmanager')
 
 PRESIGNED_EXPIRY = 600  # 10 minutes
+
+KNOWN_ASSISTANTS = ('claude-code', 'kiro', 'cursor', 'github-copilot')
+DEFAULT_ASSISTANTS = {name: (name == 'claude-code') for name in KNOWN_ASSISTANTS}
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -218,7 +223,7 @@ def _sync(body: dict) -> dict:
 
     files = _generate_presigned_urls()
     print(f"Sync for license {license_id}: returned {len(files)} presigned URLs")
-    return _resp(200, {'files': files})
+    return _resp(200, {'files': files, 'assistants': _get_assistants()})
 
 
 def _generate_presigned_urls() -> dict:
@@ -239,6 +244,23 @@ def _generate_presigned_urls() -> dict:
             )
             files[relative] = url
     return files
+
+
+def _get_assistants() -> dict:
+    """Per-assistant enforcement toggles from the documents table SETTINGS item.
+
+    Fail-open to defaults (claude-code on) when the env var, table, or item is
+    missing — mirrors config-generator's _generation_enabled."""
+    table_name = os.environ.get('DOCUMENTS_TABLE')
+    if not table_name:
+        return dict(DEFAULT_ASSISTANTS)
+    try:
+        item = dynamodb.Table(table_name).get_item(Key={'id': 'SETTINGS'}).get('Item')
+    except Exception as e:
+        print(f"Warning: could not read SETTINGS ({e}) — returning default assistants")
+        return dict(DEFAULT_ASSISTANTS)
+    stored = (item or {}).get('assistants') or {}
+    return {name: bool(stored.get(name, DEFAULT_ASSISTANTS[name])) for name in KNOWN_ASSISTANTS}
 
 
 # ---------------------------------------------------------------------------

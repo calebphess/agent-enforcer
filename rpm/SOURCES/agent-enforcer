@@ -40,6 +40,7 @@ Commands:
     --endpoint <url>    New API base URL
 
   status                Show current configuration and last sync time
+  describe              Show enforcement status, enforced assistants, and license summary
   sync                  Force an immediate sync from the enforcement API
   --daemon              Run as a background daemon (used by systemd)
 
@@ -50,6 +51,7 @@ Examples:
     --old-license-id abc123-... --old-user-id alice@old-host.com
   sudo agent-enforcer configure --endpoint https://alchemistfederal.com/agent-enforcer
   agent-enforcer status
+  sudo agent-enforcer describe
   agent-enforcer sync
 EOF
   exit 1
@@ -324,6 +326,62 @@ cmd_status() {
 }
 
 # ---------------------------------------------------------------------------
+# describe — customer-facing enforcement summary (banner + status)
+# ---------------------------------------------------------------------------
+
+cmd_describe() {
+  cmd_banner
+
+  echo "============================================================"
+  echo "  Agent Enforcer — Enforcement Summary"
+  echo "============================================================"
+
+  if [[ -f "$LICENSE_FILE" && -f "$CONFIG_FILE" ]]; then
+    echo "  Enforcement     : ENFORCING"
+  else
+    echo "  Enforcement     : NOT REGISTERED"
+    echo "  Run: sudo agent-enforcer register"
+  fi
+  echo ""
+
+  echo "  Enforced assistants:"
+  if [[ -r "${STATE_DIR}/assistants" && -s "${STATE_DIR}/assistants" ]]; then
+    while IFS='=' read -r name state; do
+      [[ -z "$name" ]] && continue
+      printf '    %-15s: %s\n' "$name" "$state"
+    done < "${STATE_DIR}/assistants"
+  else
+    printf '    %-15s: %s\n' "claude-code" "enabled (default)"
+    echo "    (no sync data yet — run 'agent-enforcer sync' to refresh)"
+  fi
+  echo ""
+
+  # License file is root:600 — a plain source as non-root would abort under
+  # set -e, so degrade to a sudo hint instead
+  if [[ -r "$LICENSE_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$LICENSE_FILE"
+    echo "  License ID      : ${LICENSE_ID:-<unknown>}"
+    echo "  User ID         : ${USER_ID:-<unknown>}"
+    echo "  Endpoint        : ${ENDPOINT:-<not set>}"
+    echo "  Registered at   : ${REGISTERED_AT:-<unknown>}"
+  elif [[ -f "$LICENSE_FILE" ]]; then
+    echo "  License         : <run with sudo to view license details>"
+  fi
+
+  if [[ -f "${STATE_DIR}/last-sync" ]]; then
+    echo "  Last sync       : $(cat "${STATE_DIR}/last-sync")"
+  else
+    echo "  Last sync       : never"
+  fi
+
+  local svc_status
+  svc_status=$(systemctl is-active agent-enforcer 2>/dev/null || echo "unknown")
+  echo "  Service         : ${svc_status}"
+  echo "============================================================"
+}
+
+# ---------------------------------------------------------------------------
 # sync
 # ---------------------------------------------------------------------------
 
@@ -380,6 +438,22 @@ do_sync() {
     echo "$(date -u): sync failed with HTTP ${http_code} — will retry next cycle" \
       >> "${STATE_DIR}/sync-errors.log"
     return 0  # treat unknown errors as transient
+  fi
+
+  # Persist enforced-assistants state for `describe`. Must happen before the
+  # empty-files early return below — a sync that returns no files still
+  # carries authoritative assistant toggles. Non-empty guard: an old server
+  # without the assistants key must not truncate prior state.
+  mkdir -p "$STATE_DIR"
+  local assistants_state
+  assistants_state=$(echo "$response_body" | python3 -c "
+import sys, json
+d = json.load(sys.stdin).get('assistants') or {}
+for name, enabled in d.items():
+    print(name + '=' + ('enabled' if enabled else 'disabled'))
+" 2>/dev/null || true)
+  if [[ -n "$assistants_state" ]]; then
+    printf '%s\n' "$assistants_state" > "${STATE_DIR}/assistants"
   fi
 
   # Download each file to staging — abort entirely if any download fails
@@ -480,6 +554,7 @@ case "${1:-}" in
   register)  shift; cmd_register "$@" ;;
   configure) shift; cmd_configure "$@" ;;
   status)    cmd_status ;;
+  describe)  cmd_describe ;;
   sync)      cmd_sync ;;
   --daemon)  cmd_daemon ;;
   banner)    cmd_banner ;;

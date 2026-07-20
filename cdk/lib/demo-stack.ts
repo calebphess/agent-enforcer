@@ -129,6 +129,12 @@ export class DemoStack extends cdk.Stack {
 
     const buildTimestamp = this.node.tryGetContext('buildTimestamp') as string | undefined ?? 'initial';
 
+    // 'auto' (default): instances run the canned spec, upload, self-destruct.
+    // 'interactive': instances stay up with the demo-prompt wrapper installed
+    // for live customer demos (see README "Interactive customer demo").
+    // Flipping the mode replaces both instances (userDataCausesReplacement).
+    const demoMode = (this.node.tryGetContext('demoMode') as string | undefined) ?? 'auto';
+
     const baseSetup = [
       '#!/bin/bash',
       `# Build ID: ${buildTimestamp}`,
@@ -208,9 +214,31 @@ export class DemoStack extends cdk.Stack {
       `curl -s -X POST "${selfDestructUrl.url}" -H 'Content-Type: application/json' -d "{\\"instance_id\\": \\"$INSTANCE_ID\\"}" || true`,
     ].join('\n');
 
+    // Interactive mode tail: no auto-run, no self-destruct — the operator runs
+    // `sudo demo-prompt "<prompt>"` on both boxes via Session Manager instead
+    const interactiveTail = (role: 'instance1' | 'instance2') => [
+      '',
+      '# === INTERACTIVE DEMO MODE — no auto-run, no self-destruct ===',
+      `echo "${role}" > /etc/demo-role`,
+      '# ARN only — no secret material on disk; demo-prompt fetches the key at run time',
+      'cat > /etc/demo-env <<EOF',
+      `RESULTS_BUCKET=${demoResultsBucket.bucketName}`,
+      `API_KEY_SECRET_ARN=${API_KEY_SECRET_ARN}`,
+      'EOF',
+      'chmod 644 /etc/demo-env',
+      `aws s3 cp "s3://${demoResultsBucket.bucketName}/demo-assets/demo-prompt.sh" /usr/local/bin/demo-prompt`,
+      `aws s3 cp "s3://${demoResultsBucket.bucketName}/demo-assets/demo-stream-filter.py" /usr/local/bin/demo-stream-filter.py`,
+      'chmod 755 /usr/local/bin/demo-prompt /usr/local/bin/demo-stream-filter.py',
+      '# Defensive: guarantee the Session Manager user can sudo on Rocky 9',
+      "echo 'ssm-user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/91-demo-ssm-user",
+      'chmod 440 /etc/sudoers.d/91-demo-ssm-user',
+      `echo 'Agent Enforcer demo (${role}). Run:  sudo demo-prompt "build me a ..."' > /etc/motd`,
+      'echo "=== Interactive demo setup complete at $(date) ==="',
+    ].join('\n');
+
     // Instance 1: control (no agent enforcer)
     const ud1 = ec2.UserData.forLinux();
-    ud1.addCommands(baseSetup + '\n' + buildAndUpload(1));
+    ud1.addCommands(baseSetup + '\n' + (demoMode === 'interactive' ? interactiveTail('instance1') : buildAndUpload(1)));
 
     const controlInstance = new ec2.Instance(this, 'ControlInstance', {
       vpc,
@@ -226,6 +254,7 @@ export class DemoStack extends cdk.Stack {
       }],
     });
     cdk.Tags.of(controlInstance).add('Project', 'agent-enforcer-demo');
+    cdk.Tags.of(controlInstance).add('Name', 'agent-enforcer-demo-control');
     controlInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // Instance 2: enforced (installs RPM, registers license, syncs via API)
@@ -257,8 +286,10 @@ export class DemoStack extends cdk.Stack {
       'done',
     ].join('\n');
 
+    // Enforced setup (RPM install + register + sync-wait) runs in BOTH modes,
+    // so `sudo agent-enforcer describe` works as soon as the box is up
     const ud2 = ec2.UserData.forLinux();
-    ud2.addCommands(baseSetup + '\n' + enforcedSetup + '\n' + buildAndUpload(2));
+    ud2.addCommands(baseSetup + '\n' + enforcedSetup + '\n' + (demoMode === 'interactive' ? interactiveTail('instance2') : buildAndUpload(2)));
 
     const enforcedInstance = new ec2.Instance(this, 'EnforcedInstance', {
       vpc,
@@ -274,11 +305,25 @@ export class DemoStack extends cdk.Stack {
       }],
     });
     cdk.Tags.of(enforcedInstance).add('Project', 'agent-enforcer-demo');
+    cdk.Tags.of(enforcedInstance).add('Name', 'agent-enforcer-demo-enforced');
     enforcedInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     new cdk.CfnOutput(this, 'SelfDestructFunctionUrl', { value: selfDestructUrl.url });
     new cdk.CfnOutput(this, 'ResultsBucketUrl', {
       value: `https://${demoResultsBucket.bucketName}.s3.amazonaws.com/results.md`,
+    });
+    new cdk.CfnOutput(this, 'DemoMode', { value: demoMode });
+    new cdk.CfnOutput(this, 'ControlInstanceId', { value: controlInstance.instanceId });
+    new cdk.CfnOutput(this, 'EnforcedInstanceId', { value: enforcedInstance.instanceId });
+    // Open these two side by side for the interactive customer demo
+    new cdk.CfnOutput(this, 'ControlSessionUrl', {
+      value: `https://${this.region}.console.aws.amazon.com/systems-manager/session-manager/${controlInstance.instanceId}?region=${this.region}`,
+    });
+    new cdk.CfnOutput(this, 'EnforcedSessionUrl', {
+      value: `https://${this.region}.console.aws.amazon.com/systems-manager/session-manager/${enforcedInstance.instanceId}?region=${this.region}`,
+    });
+    new cdk.CfnOutput(this, 'ResultsBucketBaseUrl', {
+      value: `https://${demoResultsBucket.bucketName}.s3.amazonaws.com/`,
     });
   }
 }

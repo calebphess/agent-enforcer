@@ -278,6 +278,58 @@ else
   _fail "banner lines fit 80 columns"
 fi
 
+# -------------------------------------------------------------------
+echo "Test 12: describe shows enforcement summary"
+cat > "${FAKE_VAR}/license" <<EOF
+LICENSE_ID=abc-123-def-456
+USER_ID=describe-test@example.com
+MACHINE_ID=testmachineid12345678901234
+ENDPOINT=https://test.example.com/agent-enforcer
+REGISTERED_AT=2026-07-20T00:00:00Z
+EOF
+cat > "${FAKE_ETC}/config" <<EOF
+ENDPOINT=https://test.example.com/agent-enforcer
+CONFIGURED_AT=2026-07-20T00:00:00Z
+EOF
+printf 'claude-code=enabled\nkiro=disabled\n' > "${FAKE_VAR}/assistants"
+echo "2026-07-20T00:00:00Z" > "${FAKE_VAR}/last-sync"
+
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" describe 2>&1)
+assert_contains "describe shows banner" "Powered by Alchemist" "$OUT"
+assert_contains "describe shows version" "$EXPECTED_VERSION" "$OUT"
+assert_contains "describe shows ENFORCING" "ENFORCING" "$OUT"
+assert_contains "describe shows claude-code enabled" "claude-code.*enabled" "$OUT"
+assert_contains "describe shows kiro disabled" "kiro.*disabled" "$OUT"
+assert_contains "describe shows license id" "abc-123-def-456" "$OUT"
+assert_contains "describe shows last sync" "2026-07-20T00:00:00Z" "$OUT"
+
+rm -f "${FAKE_VAR}/license"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" describe 2>&1)
+assert_contains "describe shows NOT REGISTERED" "NOT REGISTERED" "$OUT"
+assert_exit_zero "describe exits zero when unregistered" \
+  bash -c "PATH='${MOCK_BIN}:${PATH}' bash '$PATCHED' describe >/dev/null 2>&1"
+
+# -------------------------------------------------------------------
+echo "Test 13: sync writes assistants state file"
+cat > "${FAKE_VAR}/license" <<EOF
+LICENSE_ID=abc-123-def-456
+USER_ID=describe-test@example.com
+MACHINE_ID=testmachineid12345678901234
+ENDPOINT=https://test.example.com/agent-enforcer
+REGISTERED_AT=2026-07-20T00:00:00Z
+EOF
+# Empty files map on purpose: proves the assistants write happens BEFORE the
+# empty-distribution early return in do_sync
+install_mock_curl 200 '{"files":{},"assistants":{"claude-code":true,"kiro":false,"cursor":false,"github-copilot":true}}'
+rm -f "${FAKE_VAR}/assistants"
+
+PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+assert_file_exists "assistants state written by sync" "${FAKE_VAR}/assistants"
+ASSISTANTS=$(cat "${FAKE_VAR}/assistants" 2>/dev/null || echo "")
+assert_contains "assistants has claude-code enabled" "claude-code=enabled" "$ASSISTANTS"
+assert_contains "assistants has kiro disabled" "kiro=disabled" "$ASSISTANTS"
+assert_contains "assistants has github-copilot enabled" "github-copilot=enabled" "$ASSISTANTS"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

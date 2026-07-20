@@ -83,7 +83,7 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 | `license/` | API Gateway POST | Handles `/agent-enforcer/register` and `/agent-enforcer/sync` |
 | `admin/` | API Gateway (all `/admin/*` routes) | Web console backend: login (secret-backed creds, defaults `admin`/`password`), documents CRUD + presigned uploads, dashboard stats, agents list, assistant toggles |
 | `self-destruct/` | Function URL (HTTP POST) | Terminates a tagged demo EC2 instance when it calls in |
-| `analysis/` | S3 PUT suffix `completed` on `demo-results` | Waits for both instances to finish, calls Bedrock for comparison, writes `results.md` |
+| `analysis/` | S3 PUT suffix `completed` on `demo-results` | Waits for both instances under a base prefix to finish, calls Bedrock for comparison, writes `<base>results.md` (root for the auto demo, `runs/<run-id>/` for interactive runs) |
 
 ### S3 buckets
 | Bucket | Access | Purpose |
@@ -157,10 +157,13 @@ sudo agent-enforcer register [--endpoint <url>] [--user-id <id>]
                               [--no-prompt]
 sudo agent-enforcer configure --endpoint <url>
 agent-enforcer status
+sudo agent-enforcer describe # customer-facing: banner + enforcement status + enforced assistants
 agent-enforcer sync
 agent-enforcer --daemon
 agent-enforcer banner        # install-time branding (called from %post; not in usage())
 ```
+
+`describe` reads enforced-assistant toggles from `/var/lib/agent-enforcer/assistants`, which `sync` refreshes from the license API's `assistants` response field (sourced from the documents table SETTINGS item, fail-open to claude-code).
 
 ## Demo Flow
 
@@ -176,6 +179,8 @@ agent-enforcer banner        # install-time branding (called from %post; not in 
    - Instance 2 (enforced): installs RPM, auto-registers with `$INSTANCE_ID` as user_id, syncs via API, runs Claude Code under enforcement
    - Both upload results and self-terminate
 6. Check `s3://agent-enforcer-results-<account>/results.md` (~10–20 min after deploy)
+
+**Interactive demo mode**: `npm run deploy:demo:interactive` (context `demoMode=interactive`; default is `auto`). Instances stay up with `demo-prompt`/`demo-stream-filter.py` installed (shipped from `demo/` via demo-assets); operator opens the `ControlSessionUrl`/`EnforcedSessionUrl` outputs side by side, runs `sudo agent-enforcer describe` on the enforced box, then the identical `sudo demo-prompt "<prompt>"` on both. RUN_ID = sha256(prompt)[:12]; results at `runs/<run-id>/results.md`. No self-destruct — `destroy:all` cleans up; switching mode replaces both instances (`userDataCausesReplacement`). See README "Interactive customer demo".
 
 **Demo license note**: Each demo deploy registers a new license. In dev, these accumulate against `MAX_LICENSES` (default 250). Reset by adjusting the secret or manually deactivating via DynamoDB console.
 
@@ -214,10 +219,12 @@ Any `*.md` upload to the source bucket triggers the Lambda, which reads **all** 
 - `docs/ui/v0-prompt.md` — copy-pasteable V0 prompt for the admin console frontend
 - `ui/` — static admin site deployed to the UI bucket (placeholder until the V0 export lands)
 - `demo/enforcement-doc-core.md` — demo enforcement doc (upload manually to trigger generation)
-- `demo/system-spec.md` — task given to both demo instances
+- `demo/system-spec.md` — task given to both demo instances (auto mode)
+- `demo/demo-prompt.sh` — interactive-mode wrapper (per-prompt run, live stream, per-run upload)
+- `demo/demo-stream-filter.py` — renders Claude Code stream-json as readable demo output
 - `rpm/SOURCES/agent-enforcer` — main bash script (all CLI commands + daemon loop)
-- `tests/lambda/` — Lambda pytest suites (41 tests: license 16, admin 19, config-generator 6)
-- `tests/agent/test_agent.sh` — agent bash test suite (11 tests)
+- `tests/lambda/` — Lambda pytest suites (47 tests: license 18, admin 19, config-generator 6, analysis 4)
+- `tests/agent/test_agent.sh` — agent bash test suite (13 tests)
 
 ## Sales & Legal Documents (`docs/sales/`)
 - `slicksheet.md` — government-facing product slick sheet (two-page, with image placeholders for PDF rendering)

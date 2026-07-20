@@ -103,12 +103,15 @@ export class AgentEnforcerStack extends cdk.Stack {
         LICENSE_TABLE: licenseTable.tableName,
         DIST_BUCKET: distBucket.bucketName,
         CONFIG_SECRET_ARN: configSecret.secretArn,
+        DOCUMENTS_TABLE: documentsTable.tableName,
       },
     });
 
     licenseTable.grantReadWriteData(licenseFn);
     distBucket.grantRead(licenseFn);
     configSecret.grantRead(licenseFn);
+    // Sync response includes the per-assistant toggles for `agent-enforcer describe`
+    documentsTable.grantReadData(licenseFn);
 
     // HTTP API v2 — cheaper than REST API, built-in CORS
     const httpApi = new apigwv2.HttpApi(this, 'LicenseApi', {

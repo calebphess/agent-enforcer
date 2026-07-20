@@ -179,6 +179,9 @@ sudo agent-enforcer register
 
 # Check status
 agent-enforcer status
+
+# Customer-facing summary — banner, enforcement status, enforced assistants
+sudo agent-enforcer describe
 ```
 
 The service starts on boot, does nothing until configured, then syncs every 15 minutes.
@@ -186,6 +189,8 @@ The service starts on boot, does nothing until configured, then syncs every 15 m
 ---
 
 ## Demo Flow
+
+Shared prerequisites for both modes:
 
 1. Deploy `AgentEnforcerStack` — enforcement infrastructure is live
 2. Upload `demo/enforcement-doc-core.md` to the source bucket (or redeploy to trigger automatic upload):
@@ -195,11 +200,44 @@ The service starts on boot, does nothing until configured, then syncs every 15 m
    ```
 3. Verify `claude-code/latest/CLAUDE.md` appears in the dist bucket
 4. Build and upload the RPM: `cd cdk && npm run build:rpm`
-5. Deploy `DemoStack` — two instances start, run Claude Code, upload results, self-terminate
+
+### Auto-run demo (default)
+
+5. Deploy `DemoStack` (`npm run deploy:demo`) — two instances start, run Claude
+   Code against the fixed spec, upload results, self-terminate
 6. Check results (~15–20 min after deploy):
    ```
    https://agent-enforcer-results-<account>.s3.amazonaws.com/results.md
    ```
+
+### Interactive customer demo
+
+Both instances come up and **stay up** so you can drive them live with a
+customer-supplied prompt:
+
+5. `npm run deploy:demo:interactive` (deploys with `--context demoMode=interactive`)
+6. Open the `ControlSessionUrl` and `EnforcedSessionUrl` stack outputs in two
+   browser tabs (Session Manager terminals — no SSH keys needed). Wait for
+   setup to finish: `sudo tail -f /var/log/demo-setup.log`
+7. On the enforced box, show the customer it's under enforcement:
+   ```bash
+   sudo agent-enforcer describe
+   ```
+8. Run the **identical** command on both boxes (copy-paste it — the run id is
+   derived from the prompt text so both uploads land in the same run):
+   ```bash
+   sudo demo-prompt "Build a task manager REST API in Python with SQLite"
+   ```
+   Each terminal streams Claude Code's progress live. If the prompts diverged
+   by accident, re-run one side with `sudo DEMO_RUN_ID=<id> demo-prompt "..."`.
+9. When both finish, each box prints the same results URL — open it (allow a
+   minute or two for the Bedrock comparison):
+   ```
+   https://agent-enforcer-results-<account>.s3.amazonaws.com/runs/<run-id>/results.md
+   ```
+   Each new prompt gets its own `runs/<run-id>/` comparison.
+10. Interactive instances never self-terminate — run `npm run destroy:all`
+    when the demo is over. Switching `demoMode` replaces both instances.
 
 ---
 

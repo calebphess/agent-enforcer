@@ -71,6 +71,8 @@ echo ""
 - Add admin web UI backend: documents table, /admin API, UI hosting bucket
 - Add per-assistant config generation toggles (claude-code gating functional)
 - Auto-register direct S3 uploads in the documents registry
+- Add 'describe' command: banner + enforcement status + enforced assistants
+- Sync persists per-assistant toggles from the license API to agent state
 
 * Tue Jun 24 2026 Agent Enforcer Team <noreply@example.com> - 0.2.1-1
 - Add license registration system (DynamoDB-backed via REST API)
