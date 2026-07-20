@@ -1,6 +1,6 @@
 #!/bin/bash
 # /usr/bin/agent-enforcer
-# Agent Enforcer — AI Configuration Enforcement Agent v0.2.1
+# Agent Enforcer — AI Configuration Enforcement Agent
 #
 # Syncs AI tool configurations from a central distribution API and applies them
 # to all user ~/.claude/ directories on this host.
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-readonly AGENT_VERSION="0.2.3"
+readonly AGENT_VERSION="0.3.0"
 readonly AGENT_TYPE="ROCKY9"
 readonly CONFIG_FILE="/etc/agent-enforcer/config"
 readonly LICENSE_FILE="/var/lib/agent-enforcer/license"
@@ -53,6 +53,32 @@ Examples:
   agent-enforcer sync
 EOF
   exit 1
+}
+
+# ---------------------------------------------------------------------------
+# banner — install-time branding, invoked from the RPM %post scriptlet
+# ---------------------------------------------------------------------------
+
+cmd_banner() {
+  # Quoted heredoc: the art contains backslashes and pipes that must not expand
+  cat <<'BANNER'
+
+               _      ____  _____  _   _  _____
+              / \    / ___|| ____|| \ | ||_   _|
+             / _ \  | |  _ |  _|  |  \| |  | |
+            / ___ \ | |_| || |___ | |\  |  | |
+           /_/   \_\ \____||_____||_| \_|  |_|
+
+   _____  _   _  _____   ___   ____    ____  _____  ____
+  | ____|| \ | ||  ___| / _ \ |  _ \  / ___|| ____||  _ \
+  |  _|  |  \| || |_   | | | || |_) || |    |  _|  | |_) |
+  | |___ | |\  ||  _|  | |_| ||  _ < | |___ | |___ |  _ <
+  |_____||_| \_||_|     \___/ |_| \_\ \____||_____||_| \_\
+
+                   Powered by Alchemist
+BANNER
+  echo "                          v${AGENT_VERSION}"
+  echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -456,5 +482,6 @@ case "${1:-}" in
   status)    cmd_status ;;
   sync)      cmd_sync ;;
   --daemon)  cmd_daemon ;;
+  banner)    cmd_banner ;;
   *)         usage ;;
 esac

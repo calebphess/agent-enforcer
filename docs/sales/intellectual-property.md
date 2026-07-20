@@ -44,6 +44,8 @@ A method in which natural language organizational policy documents (security req
 - The specific pipeline: natural language policy document → LLM transformation → structured AI agent configuration bundle → automatic distribution to enforcement endpoints
 - The schema of the output bundle (CLAUDE.md + settings.json + skills/ + commands/) as a defined artifact format for AI agent governance
 - The triggering mechanism: any upload to the policy source triggers re-ingestion of all policy documents and regeneration of the complete bundle (not just the changed document)
+- Per-assistant selective generation gating: administrator-controlled toggles that enable or disable bundle generation per target AI coding assistant (Claude Code, Kiro, Cursor, GitHub Copilot), evaluated by the generation pipeline before each regeneration (added v0.3.0)
+- A centralized policy-document registry with versioned, soft-delete lifecycle metadata (creation/update attribution, monotonic version counter) that is kept bidirectionally consistent with the object store: documents uploaded directly to storage are auto-registered from storage events, and registry deletions remove the source object and trigger bundle regeneration without the removed policy (added v0.3.0)
 
 **Distinguishing from prior art:**
 Existing LLM configuration is either hand-authored or application-specific. The novel element is the automated pipeline from organizational policy documents through LLM transformation to a distributed, system-enforced configuration bundle at scale.
@@ -122,7 +124,8 @@ The following works are automatically protected by copyright upon creation (17 U
 |------|------|-------|
 | Agent Enforcer source code (all files in the repository) | Literary work (software) | Register as a single deposit; update registrations with major releases |
 | `agent-enforcer` bash script (the enforcement daemon) | Literary work (software) | Core IP — high priority |
-| Lambda function source code (config-generator, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
+| Lambda function source code (config-generator, license, admin, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
+| Admin console web UI (design specification and generated site) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`) and the console's distinctive navy/gold visual identity |
 | CDK stack definitions (TypeScript) | Literary work (software) | Infrastructure-as-code is copyrightable |
 | RPM spec file and packaging scripts | Literary work (software) | |
 | slicksheet.md / offer-letter.md marketing documents | Literary work | Register once finalized |

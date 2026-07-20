@@ -23,16 +23,23 @@ Naming convention for source documents:
 """
 import json
 import os
+import uuid
 from datetime import datetime, timezone
+from urllib.parse import unquote_plus
 
 import boto3
 from botocore.exceptions import ClientError
 
 s3 = boto3.client('s3')
 bedrock = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+dynamodb = boto3.resource('dynamodb')
 
 DIST_BUCKET = os.environ['DIST_BUCKET']
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+
+# A UI-managed upload writes its registry record moments before the S3 event
+# lands — don't double-bump a record that fresh.
+REGISTRY_GRACE_SECONDS = 120
 
 SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into efficient Claude Code configuration bundles.
 
@@ -106,11 +113,18 @@ Return a single JSON object. No markdown fencing, no prose outside the JSON.
 
 
 def handler(event, context):
-    """Process a source bucket PUT event by regenerating the full .claude/ bundle."""
+    """Process a source bucket event by regenerating the full .claude/ bundle."""
     # All records in the event share the same source bucket
     source_bucket = event['Records'][0]['s3']['bucket']['name']
-    trigger_key = event['Records'][0]['s3']['object']['key']
-    print(f"Triggered by upload of '{trigger_key}' to {source_bucket}")
+    trigger_key = unquote_plus(event['Records'][0]['s3']['object']['key'])
+    print(f"Triggered by event on '{trigger_key}' in {source_bucket}")
+
+    # Registry bookkeeping happens regardless of generation toggles
+    _register_documents(event)
+
+    if not _generation_enabled('claude-code'):
+        print("claude-code generation disabled via SETTINGS — skipping")
+        return
 
     docs = _read_all_docs(source_bucket)
     if not docs:
@@ -129,6 +143,99 @@ def handler(event, context):
 
     _write_bundle(files, version)
     print(f"Bundle written: {len(files)} files at version {version}")
+
+
+# ---------------------------------------------------------------------------
+# Documents registry + assistant toggles (admin UI integration)
+# ---------------------------------------------------------------------------
+
+def _generation_enabled(assistant: str) -> bool:
+    """Fail-open: with no table configured, no SETTINGS item, or any read
+    error, generation proceeds — the direct `aws s3 cp` flow must keep working.
+
+    Only claude-code gating is functional today; kiro/cursor/github-copilot
+    toggles persist in SETTINGS but have no generation pipeline yet."""
+    table_name = os.environ.get('DOCUMENTS_TABLE')
+    if not table_name:
+        return True
+    try:
+        item = dynamodb.Table(table_name).get_item(Key={'id': 'SETTINGS'}).get('Item')
+    except Exception as e:
+        print(f"  Warning: could not read SETTINGS ({e}) — generation proceeds")
+        return True
+    if not item:
+        return True
+    return bool((item.get('assistants') or {}).get(assistant, True))
+
+
+def _register_documents(event) -> None:
+    """Keep the documents registry in step with the bucket: direct uploads
+    (aws s3 cp) get a record created for them, re-uploads refresh the existing
+    one. Registry trouble never blocks generation."""
+    table_name = os.environ.get('DOCUMENTS_TABLE')
+    if not table_name:
+        return
+    table = dynamodb.Table(table_name)
+
+    for record in event.get('Records', []):
+        if not record.get('eventName', '').startswith('ObjectCreated'):
+            continue  # removals regenerate the bundle but never touch the registry
+        key = unquote_plus(record['s3']['object']['key'])
+        if not key.lower().endswith('.md'):
+            continue
+        try:
+            _upsert_document_record(table, key)
+        except Exception as e:
+            print(f"  Warning: could not register {key} in documents table: {e}")
+
+
+def _upsert_document_record(table, key: str) -> None:
+    existing = None
+    kwargs = {}
+    while True:
+        page = table.scan(**kwargs)
+        for item in page.get('Items', []):
+            if item.get('id') != 'SETTINGS' and item.get('filename') == key and not item.get('deleted'):
+                existing = item
+                break
+        if existing or 'LastEvaluatedKey' not in page:
+            break
+        kwargs['ExclusiveStartKey'] = page['LastEvaluatedKey']
+
+    now = datetime.now(timezone.utc)
+    now_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    if existing is None:
+        basename = os.path.basename(key)
+        table.put_item(Item={
+            'id': str(uuid.uuid4()),
+            'name': os.path.splitext(basename)[0],
+            'description': 'Uploaded directly to S3',
+            'filename': key,
+            'created': now_str,
+            'updated': now_str,
+            'deleted': None,
+            '_version': 1,
+            'created_by': 's3-upload',
+            'updated_by': 's3-upload',
+        })
+        print(f"  Registered untracked document {key} in documents table")
+        return
+
+    try:
+        updated_at = datetime.strptime(
+            existing.get('updated', ''), '%Y-%m-%dT%H:%M:%SZ'
+        ).replace(tzinfo=timezone.utc)
+        if (now - updated_at).total_seconds() < REGISTRY_GRACE_SECONDS:
+            return  # tail of a UI-managed upload — record is already current
+    except ValueError:
+        pass
+
+    existing['updated'] = now_str
+    existing['updated_by'] = 's3-upload'
+    existing['_version'] = int(existing.get('_version', 0)) + 1
+    table.put_item(Item=existing)
+    print(f"  Refreshed document record for re-uploaded {key}")
 
 
 def _read_all_docs(bucket: str) -> dict:

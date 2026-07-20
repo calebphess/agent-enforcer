@@ -57,6 +57,16 @@ export class AgentEnforcerStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Documents registry for the admin UI — tracks enforcement docs in the
+    // source bucket, plus the special SETTINGS item holding per-assistant
+    // generation toggles (mirrors the license table's COUNTER convention)
+    const documentsTable = new dynamodb.Table(this, 'DocumentsTable', {
+      tableName: 'AgentEnforcerDocuments',
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // -------------------------------------------------------------------------
     // Secrets Manager — Config
     // -------------------------------------------------------------------------
@@ -65,7 +75,15 @@ export class AgentEnforcerStack extends cdk.Stack {
       secretName: 'agent-enforcer/config',
       description: 'Agent Enforcer runtime configuration',
       generateSecretString: {
-        secretStringTemplate: JSON.stringify({ max_licenses: 250 }),
+        // Applied at secret CREATION only — CloudFormation never rewrites an
+        // existing secret's value from this template. The admin Lambda carries
+        // the same admin/password defaults in code for stacks whose secret
+        // predates these keys.
+        secretStringTemplate: JSON.stringify({
+          max_licenses: 250,
+          admin_username: 'admin',
+          admin_password: 'password',
+        }),
         generateStringKey: '_placeholder',  // required field, unused
       },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -96,9 +114,18 @@ export class AgentEnforcerStack extends cdk.Stack {
     const httpApi = new apigwv2.HttpApi(this, 'LicenseApi', {
       apiName: 'agent-enforcer-api',
       corsPreflight: {
+        // Browser-based admin UI needs the full method set + Authorization.
+        // CORS config is API-wide on HTTP API v2 — harmless to the
+        // curl-based /agent-enforcer/* routes.
         allowOrigins: ['*'],
-        allowMethods: [apigwv2.CorsHttpMethod.POST],
-        allowHeaders: ['Content-Type'],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PUT,
+          apigwv2.CorsHttpMethod.DELETE,
+          apigwv2.CorsHttpMethod.OPTIONS,
+        ],
+        allowHeaders: ['Content-Type', 'Authorization'],
       },
       defaultAuthorizer: undefined,
     });
@@ -140,11 +167,15 @@ export class AgentEnforcerStack extends cdk.Stack {
         DIST_BUCKET: distBucket.bucketName,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
         AWS_ACCOUNT_REGION: this.region,
+        DOCUMENTS_TABLE: documentsTable.tableName,
       },
     });
 
     sourceBucket.grantRead(configGeneratorFn);
     distBucket.grantReadWrite(configGeneratorFn);
+    // Reads SETTINGS for the per-assistant toggle; writes registry records
+    // for docs uploaded directly to S3 (aws s3 cp)
+    documentsTable.grantReadWriteData(configGeneratorFn);
     // Cross-region inference profiles route across multiple AWS regions,
     // so the resource must be '*' — there's no single-region ARN to scope to.
     configGeneratorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -158,11 +189,84 @@ export class AgentEnforcerStack extends cdk.Stack {
       new s3n.LambdaDestination(configGeneratorFn),
     );
 
+    // Deletes regenerate too, so removing a document via the admin UI (or CLI)
+    // drops its rules from the bundle instead of leaving them stale
+    sourceBucket.addEventNotification(
+      s3.EventType.OBJECT_REMOVED,
+      new s3n.LambdaDestination(configGeneratorFn),
+    );
+
     // Seed default enforcement doc on deploy — triggers the Lambda automatically
     new s3deploy.BucketDeployment(this, 'DefaultEnforcementDoc', {
       sources: [s3deploy.Source.asset(path.join(__dirname, '../assets'))],
       destinationBucket: sourceBucket,
       prune: false,
+    });
+
+    // -------------------------------------------------------------------------
+    // Admin Web UI — API Lambda + static site hosting
+    // -------------------------------------------------------------------------
+
+    const adminFn = new lambda.Function(this, 'AdminFn', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, 'lambda/admin')),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        LICENSE_TABLE: licenseTable.tableName,
+        DOCUMENTS_TABLE: documentsTable.tableName,
+        SOURCE_BUCKET: sourceBucket.bucketName,
+        CONFIG_SECRET_ARN: configSecret.secretArn,
+      },
+    });
+
+    documentsTable.grantReadWriteData(adminFn);
+    licenseTable.grantReadData(adminFn);
+    configSecret.grantRead(adminFn);
+    // Presigned upload URLs are signed with the Lambda role's credentials, so
+    // the role itself needs put; document deletes remove the source object
+    sourceBucket.grantPut(adminFn);
+    sourceBucket.grantDelete(adminFn);
+
+    const adminIntegration = new apigwv2int.HttpLambdaIntegration('AdminIntegration', adminFn);
+    const adminRoutes: Record<string, apigwv2.HttpMethod[]> = {
+      '/admin/login': [apigwv2.HttpMethod.POST],
+      '/admin/documents': [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      '/admin/documents/{id}': [apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE],
+      '/admin/documents/{id}/upload-url': [apigwv2.HttpMethod.POST],
+      '/admin/stats': [apigwv2.HttpMethod.GET],
+      '/admin/agents': [apigwv2.HttpMethod.GET],
+      '/admin/assistants': [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT],
+    };
+    for (const [routePath, methods] of Object.entries(adminRoutes)) {
+      httpApi.addRoutes({ path: routePath, methods, integration: adminIntegration });
+    }
+
+    // Static admin console — bucket name comes from config (cdk context key
+    // `uiBucketName`); contents are the V0 static export dropped into ui/
+    // (placeholder page until then). Same public-read dev posture as the demo
+    // results bucket; CloudFront is the prod path for HTTPS.
+    const uiBucketName =
+      this.node.tryGetContext('uiBucketName') ?? `agent-enforcer-ui-${this.account}`;
+    const uiBucket = new s3.Bucket(this, 'AdminUi', {
+      bucketName: uiBucketName,
+      websiteIndexDocument: 'index.html',
+      websiteErrorDocument: 'index.html',  // SPA fallback for client-side routes
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: false,
+        blockPublicPolicy: false,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: false,
+      }),
+      publicReadAccess: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    new s3deploy.BucketDeployment(this, 'AdminUiDeployment', {
+      sources: [s3deploy.Source.asset(path.join(__dirname, '../../ui'))],
+      destinationBucket: uiBucket,
     });
 
     // -------------------------------------------------------------------------
@@ -177,5 +281,10 @@ export class AgentEnforcerStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'LicenseTableName', { value: licenseTable.tableName });
     new cdk.CfnOutput(this, 'ConfigSecretArn', { value: configSecret.secretArn });
+    new cdk.CfnOutput(this, 'DocumentsTableName', { value: documentsTable.tableName });
+    new cdk.CfnOutput(this, 'UiUrl', {
+      value: uiBucket.bucketWebsiteUrl,
+      description: 'Admin console URL (default login admin/password — override in the config secret)',
+    });
   }
 }

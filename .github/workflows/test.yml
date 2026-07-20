@@ -29,7 +29,7 @@ jobs:
         run: pip install -r tests/lambda/requirements-test.txt
 
       - name: Run lambda tests
-        run: python -m pytest tests/lambda/test_license.py -v
+        run: python -m pytest tests/lambda/ -v
 
   agent-tests:
     name: Agent bash unit tests

@@ -237,7 +237,7 @@ export class DemoStack extends cdk.Stack {
       '# Install RPM from agent-enforcer-rpm S3 bucket',
       `RPM_FILE=$(aws s3 ls "s3://${RPM_BUCKET}/" --recursive | grep "\\.rpm$" | sort | tail -1 | awk '{print $4}')`,
       `aws s3 cp "s3://${RPM_BUCKET}/$RPM_FILE" /tmp/agent-enforcer.rpm`,
-      'rpm -ivh /tmp/agent-enforcer.rpm',
+      'rpm -i /tmp/agent-enforcer.rpm',
       '',
       '# Register with the license API using instance ID as user_id',
       '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',

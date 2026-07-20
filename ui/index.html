@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Enforcer — Admin Console</title>
+  <style>
+    :root {
+      --navy: #0A1628;
+      --gold: #C8A94A;
+      --paper: #FBFCFE;
+      --muted: #647084;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(145deg, #07101F 0%, #0A1628 52%, #0F2442 100%);
+      color: var(--paper);
+      text-align: center;
+      padding: 24px;
+    }
+    .card {
+      border-top: 3px solid var(--gold);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 48px 56px;
+      border-radius: 6px;
+      box-shadow: 0 22px 60px rgba(10, 22, 40, 0.18);
+    }
+    .eyebrow {
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 { font-size: 32px; font-weight: 800; margin-bottom: 8px; }
+    p { color: var(--muted); font-size: 14px; max-width: 42ch; margin: 0 auto; }
+    code {
+      color: var(--gold);
+      font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+      font-size: 13px;
+    }
+    footer { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Powered by Alchemist</div>
+    <h1>Agent Enforcer</h1>
+    <p>Admin console build pending — drop the V0 static export into
+      <code>ui/</code> and redeploy.</p>
+  </div>
+  <footer>© 2026 Alchemist. All rights reserved. Agent Enforcer is a trademark of Alchemist.</footer>
+</body>
+</html>

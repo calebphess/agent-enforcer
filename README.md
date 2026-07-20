@@ -143,17 +143,39 @@ aws s3 ls s3://agent-enforcer-dist-$(aws sts get-caller-identity --query Account
 
 ---
 
+## Admin Console
+
+A static web console deploys with `AgentEnforcerStack` to the
+`agent-enforcer-ui-<account>` bucket (override the name with
+`-c uiBucketName=<name>`). The `UiUrl` stack output is the site URL.
+
+- **Login**: defaults to `admin` / `password`. Override with `admin_username`
+  / `admin_password` keys in the `agent-enforcer/config` secret.
+- **Documents**: upload enforcement `.md` docs (name auto-fills from the
+  filename), edit descriptions, soft-delete with automatic bundle
+  regeneration. Docs uploaded directly via `aws s3 cp` are auto-registered.
+- **Dashboard**: license usage vs. limit, registered agents, document count.
+- **Assistants**: enable/disable config generation per coding assistant
+  (Claude Code live today; Kiro, Cursor, and GitHub Copilot toggles are
+  forward-looking).
+
+The frontend is generated with Vercel V0: paste `docs/ui/v0-prompt.md` into
+v0.dev, static-export the result into `ui/`, and redeploy. Until then the
+bucket serves a branded placeholder page.
+
+---
+
 ## Installing the Agent (Rocky Linux / RHEL)
 
 ```bash
 # Download latest RPM
-aws s3 cp s3://agent-enforcer-rpm/agent-enforcer-0.1.0-1.noarch.rpm /tmp/
+aws s3 cp s3://agent-enforcer-rpm/agent-enforcer-<version>-1.noarch.rpm /tmp/
 
-# Install
-sudo rpm -ivh /tmp/agent-enforcer-0.1.0-1.noarch.rpm
+# Install — no -v needed; the installer prints a clean banner with next steps
+sudo rpm -i /tmp/agent-enforcer-<version>-1.noarch.rpm
 
-# Configure with your enforcement bucket
-sudo agent-enforcer configure --bucket agent-enforcer-dist-<account-id>
+# Register with the enforcement API
+sudo agent-enforcer register
 
 # Check status
 agent-enforcer status

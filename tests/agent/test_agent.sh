@@ -266,6 +266,18 @@ assert_contains "status shows user id" "status-test@example.com" "$STATUS"
 EXPECTED_VERSION=$(grep '^readonly AGENT_VERSION=' "$AGENT_SCRIPT" | cut -d'"' -f2)
 assert_contains "status shows version" "$EXPECTED_VERSION" "$STATUS"
 
+# -------------------------------------------------------------------
+echo "Test 11: banner command prints branding"
+OUT=$(bash "$PATCHED" banner 2>&1)
+assert_exit_zero "banner exits zero" bash -c "bash '$PATCHED' banner >/dev/null"
+assert_contains "banner shows Powered by Alchemist" "Powered by Alchemist" "$OUT"
+assert_contains "banner shows version" "$EXPECTED_VERSION" "$OUT"
+if echo "$OUT" | awk 'length > 80 { exit 1 }'; then
+  _pass "banner lines fit 80 columns"
+else
+  _fail "banner lines fit 80 columns"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

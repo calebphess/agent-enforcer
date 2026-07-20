@@ -14,7 +14,7 @@ Do not skip any of these steps, even for small changes. Branch names should be l
 
 ## Version Management
 
-The canonical project version is in `VERSION` at the repo root. Current: **0.2.1**
+The canonical project version is in `VERSION` at the repo root. Current: **0.3.0**
 
 **On every new feature, ask the user which segment to bump (patch / minor / major), then update all three locations:**
 1. `VERSION` file (single line, e.g. `0.2.1`)
@@ -27,7 +27,7 @@ CI auto-bumps patch on every merge to main. Include `[minor]` or `[major]` in th
 
 **Every new feature that adds testable functionality MUST have tests.**
 
-- **Lambda/backend**: add to `tests/lambda/test_license.py` using `pytest` + `moto`
+- **Lambda/backend**: add to the matching suite in `tests/lambda/` (`test_license.py`, `test_admin_api.py`, `test_config_generator.py`) using `pytest` + `moto`. One suite per Lambda — each `index.py` after the first must load via `importlib.util.spec_from_file_location` under a unique module name (`test_license.py` holds the bare `import index`)
 - **Agent bash**: add to `tests/agent/test_agent.sh` using the existing harness
 - **At end of every plan**: list the specific tests that will be written (by name) so the user can review them
 
@@ -40,7 +40,7 @@ Running tests locally:
 ```bash
 # Lambda tests
 pip install -r tests/lambda/requirements-test.txt
-python -m pytest tests/lambda/test_license.py -v
+python -m pytest tests/lambda/ -v
 
 # Agent tests
 bash tests/agent/test_agent.sh
@@ -72,15 +72,16 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 `https://aws.amazon.com/marketplace/pp?sku=3qk9e6x2ni81uiqnorll45r3f`
 
 ### Stacks
-- `AgentEnforcerStack` — S3 buckets (source, dist) + config-generator Lambda + DynamoDB license table + API Gateway license API + Secrets Manager config
+- `AgentEnforcerStack` — S3 buckets (source, dist, admin UI) + config-generator Lambda + DynamoDB license and documents tables + API Gateway (license API + `/admin` API) + Secrets Manager config
 - `DemoStack` — 2 Rocky Linux EC2 instances, self-destruct Lambda, analysis Lambda, results bucket
 - `RpmBuilderStack` — builds and publishes the RPM via EC2
 
 ### Lambda functions (all Python 3.12, in `cdk/lib/lambda/`)
 | Directory | Trigger | Purpose |
 |-----------|---------|---------|
-| `config-generator/` | S3 PUT on `enforcement-source` | Calls Bedrock to convert enforcement doc → `.claude/` file bundle, writes to `enforcement-dist/claude-code/latest/` |
+| `config-generator/` | S3 PUT + delete on `enforcement-source` | Calls Bedrock to convert enforcement doc → `.claude/` file bundle, writes to `enforcement-dist/claude-code/latest/`; honors the claude-code SETTINGS toggle (fail-open) and auto-registers direct S3 uploads in the documents table |
 | `license/` | API Gateway POST | Handles `/agent-enforcer/register` and `/agent-enforcer/sync` |
+| `admin/` | API Gateway (all `/admin/*` routes) | Web console backend: login (secret-backed creds, defaults `admin`/`password`), documents CRUD + presigned uploads, dashboard stats, agents list, assistant toggles |
 | `self-destruct/` | Function URL (HTTP POST) | Terminates a tagged demo EC2 instance when it calls in |
 | `analysis/` | S3 PUT suffix `completed` on `demo-results` | Waits for both instances to finish, calls Bedrock for comparison, writes `results.md` |
 
@@ -90,18 +91,30 @@ npm run destroy:all                    # destroy all stacks (clean slate)
 | `agent-enforcer-source-<account>` | Private | Upload enforcement docs here — triggers Lambda |
 | `agent-enforcer-dist-<account>` | **Private** | Configs distributed via presigned URLs from license API |
 | `agent-enforcer-results-<account>` | Public read | Demo instance outputs + `results.md` |
+| `agent-enforcer-ui-<account>` | Public read (website) | Admin console static site; name overridable via cdk context `uiBucketName`; contents deployed from `ui/` |
 | `agent-enforcer-rpm` | Public read | Pre-existing bucket for hosting built RPMs |
 
 ### API Gateway
-- Base URL output: `ApiEndpoint` CDK output (used by demo instances and for manual testing)
-- Routes: `POST /agent-enforcer/register`, `POST /agent-enforcer/sync`
+- Base URL output: `ApiEndpoint` CDK output (used by demo instances, the admin UI, and manual testing)
+- Agent routes: `POST /agent-enforcer/register`, `POST /agent-enforcer/sync`
+- Admin routes (Bearer-token auth except login): `POST /admin/login`, `GET|POST /admin/documents`, `PUT|DELETE /admin/documents/{id}`, `POST /admin/documents/{id}/upload-url`, `GET /admin/stats`, `GET /admin/agents`, `GET|PUT /admin/assistants`
+- CORS is API-wide (GET/POST/PUT/DELETE + Authorization header) for the browser UI
 - Default endpoint in agent: `https://alchemistfederal.com/agent-enforcer`
 
 ### DynamoDB
 - Table: `AgentEnforcerLicenses`
-- PK: `license_id` (UUID4); GSI: `UserIndex` on `user_id`
-- Special counter item `{ license_id: "COUNTER", active_count: N, total_count: N }`
-- MAX_LICENSES stored in Secrets Manager secret `agent-enforcer/config`
+  - PK: `license_id` (UUID4); GSI: `UserIndex` on `user_id`
+  - Special counter item `{ license_id: "COUNTER", active_count: N, total_count: N }`
+  - MAX_LICENSES stored in Secrets Manager secret `agent-enforcer/config`
+- Table: `AgentEnforcerDocuments`
+  - PK: `id` (UUID4); items: `name, description, filename, created, updated, deleted (null|ISO — soft delete), _version, created_by, updated_by`
+  - Special settings item `{ id: "SETTINGS", assistants: { "claude-code": bool, "kiro": bool, "cursor": bool, "github-copilot": bool } }` (absent = code defaults, claude-code on)
+  - Docs uploaded straight to S3 (`aws s3 cp`) are auto-registered by config-generator (`created_by: "s3-upload"`); re-uploads refresh the record unless it changed in the last 120s (UI upload grace window)
+
+### Admin Web UI
+- Login defaults `admin`/`password` — override via `admin_username`/`admin_password` (+ optional `admin_session_secret`) in the `agent-enforcer/config` secret. Defaults live in Lambda code because a deployed secret never picks up `generateSecretString` template changes.
+- `UiUrl` CDK output → S3 website URL (HTTP-only; CloudFront is the prod path)
+- Frontend workflow: paste `docs/ui/v0-prompt.md` into V0, static-export the result into `ui/`, redeploy
 
 ### Future prod deploy considerations
 Current stacks use `RemovalPolicy.DESTROY` and `autoDeleteObjects: true` — dev-only. For a future prod stack:
@@ -111,7 +124,9 @@ Current stacks use `RemovalPolicy.DESTROY` and `autoDeleteObjects: true` — dev
 
 ## RPM Package (`rpm/`)
 
-Builds a `noarch` RPM for Rocky Linux 9 / RHEL 9. Current version: **0.2.1**
+Builds a `noarch` RPM for Rocky Linux 9 / RHEL 9. Current version: **0.3.0**
+
+Install with plain `sudo rpm -i` (no `-vh` needed) — `%post` prints an ASCII banner via `agent-enforcer banner` plus next-step hints. The banner art lives in the agent script as a quoted heredoc; never inline it in the spec (rpm macro-expands `%` in scriptlets). The spec's `%post` message and version file use `%{version}` — no hardcoded version strings.
 
 ```bash
 cd rpm
@@ -144,6 +159,7 @@ sudo agent-enforcer configure --endpoint <url>
 agent-enforcer status
 agent-enforcer sync
 agent-enforcer --daemon
+agent-enforcer banner        # install-time branding (called from %post; not in usage())
 ```
 
 ## Demo Flow
@@ -194,11 +210,14 @@ Any `*.md` upload to the source bucket triggers the Lambda, which reads **all** 
 - `VERSION` — canonical project version (single line)
 - `cdk/assets/default-enforcement.md` — default policy seeded into source bucket on first deploy
 - `cdk/lib/lambda/license/index.py` — register + sync endpoint logic
+- `cdk/lib/lambda/admin/index.py` — admin console API (auth, documents, stats, toggles)
+- `docs/ui/v0-prompt.md` — copy-pasteable V0 prompt for the admin console frontend
+- `ui/` — static admin site deployed to the UI bucket (placeholder until the V0 export lands)
 - `demo/enforcement-doc-core.md` — demo enforcement doc (upload manually to trigger generation)
 - `demo/system-spec.md` — task given to both demo instances
 - `rpm/SOURCES/agent-enforcer` — main bash script (all CLI commands + daemon loop)
-- `tests/lambda/test_license.py` — license Lambda pytest suite (16 tests)
-- `tests/agent/test_agent.sh` — agent bash test suite (22 assertions / 10 tests)
+- `tests/lambda/` — Lambda pytest suites (41 tests: license 16, admin 19, config-generator 6)
+- `tests/agent/test_agent.sh` — agent bash test suite (11 tests)
 
 ## Sales & Legal Documents (`docs/sales/`)
 - `slicksheet.md` — government-facing product slick sheet (two-page, with image placeholders for PDF rendering)
