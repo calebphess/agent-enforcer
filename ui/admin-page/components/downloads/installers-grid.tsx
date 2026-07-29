@@ -8,8 +8,10 @@ import {
 } from 'material-react-table'
 import { Download, HardDriveDownload } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-is-mobile'
+import { useResponsiveColumns } from '@/hooks/use-responsive-columns'
 import { StatusPill, TimeCell } from '@/components/data-cells'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -26,6 +28,17 @@ const PLATFORM_LABEL: Record<InstallerDownload['platform'], string> = {
   macos: 'macOS',
 }
 
+// Width reserved for the always-visible pair: truncating filename + Download.
+const PRIMARY_MIN_WIDTH = 300
+// Optional columns ordered highest → lowest priority (last drops first as the
+// grid gets thinner). Widths include cell padding so nothing overflows.
+const RESPONSIVE_COLUMNS = [
+  { key: 'version', minWidth: 140 },
+  { key: 'platform', minWidth: 190 },
+  { key: 'updated', minWidth: 160 },
+  { key: 'size', minWidth: 110 },
+]
+
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${Math.max(1, Math.round(bytes / 1024))} KB`
@@ -41,6 +54,13 @@ export function InstallersGrid({
   const isMobile = useIsMobile()
   const [showAll, setShowAll] = useState(false)
 
+  // Drop columns based on the width actually available to the grid (not the
+  // viewport); filename + Download always stay.
+  const { containerRef, columnVisibility } = useResponsiveColumns(
+    PRIMARY_MIN_WIDTH,
+    RESPONSIVE_COLUMNS,
+  )
+
   const rows = useMemo(() => {
     const all = installers ?? []
     const visible = showAll ? all : all.filter((i) => i.latest)
@@ -55,10 +75,13 @@ export function InstallersGrid({
       {
         accessorKey: 'filename',
         header: 'Installer',
-        size: 260,
+        size: 180,
         grow: true,
         Cell: ({ row }) => (
-          <span className="font-mono text-[13px] font-medium text-foreground">
+          <span
+            className="block max-w-full truncate font-mono text-[13px] font-medium text-foreground"
+            title={row.original.filename}
+          >
             {row.original.filename}
           </span>
         ),
@@ -67,10 +90,10 @@ export function InstallersGrid({
         id: 'platform',
         accessorFn: (row) => PLATFORM_LABEL[row.platform],
         header: 'Platform',
-        size: 180,
+        size: 170,
         filterVariant: 'select',
         Cell: ({ row }) => (
-          <span className="rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
+          <span className="whitespace-nowrap rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
             {PLATFORM_LABEL[row.original.platform]}
           </span>
         ),
@@ -78,12 +101,12 @@ export function InstallersGrid({
       {
         accessorKey: 'version',
         header: 'Version',
-        size: 130,
+        size: 120,
         Cell: ({ row }) =>
           row.original.latest ? (
             <StatusPill tone="gold">latest</StatusPill>
           ) : (
-            <span className="rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
+            <span className="whitespace-nowrap rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
               {row.original.version}
             </span>
           ),
@@ -92,32 +115,39 @@ export function InstallersGrid({
         id: 'size',
         accessorFn: (row) => row.size,
         header: 'Size',
-        size: 100,
+        size: 90,
         enableColumnFilter: false,
         Cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">{formatSize(row.original.size)}</span>
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {formatSize(row.original.size)}
+          </span>
         ),
       },
       {
         accessorKey: 'updated',
         header: 'Updated',
-        size: 150,
+        size: 140,
         enableColumnFilter: false,
         Cell: ({ row }) => <TimeCell iso={row.original.updated} />,
       },
       {
         id: 'download',
         header: '',
-        size: 130,
+        size: 120,
+        grow: false,
         enableColumnFilter: false,
         enableSorting: false,
+        enableColumnOrdering: false,
         Cell: ({ row }) => (
-          <Button asChild variant="outline" size="sm">
-            <a href={row.original.url} download>
-              <Download data-icon="inline-start" />
-              Download
-            </a>
-          </Button>
+          <a
+            href={row.original.url}
+            download
+            className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+            aria-label={`Download ${row.original.filename}`}
+          >
+            <Download data-icon="inline-start" />
+            <span className="hidden sm:inline">Download</span>
+          </a>
         ),
       },
     ],
@@ -135,7 +165,20 @@ export function InstallersGrid({
     enableFullScreenToggle: false,
     enableHiding: false,
     enableRowActions: false,
+    // Grid layout + a growing primary column lets the table fill its container
+    // without overflowing; dropped columns keep the rest on one line.
     layoutMode: 'grid',
+    muiTableHeadCellProps: {
+      sx: {
+        '& .Mui-TableHeadCell-Content': { overflow: 'visible' },
+        '& .Mui-TableHeadCell-Content-Labels': { overflow: 'visible' },
+        '& .Mui-TableHeadCell-Content-Wrapper': {
+          overflow: 'visible',
+          textOverflow: 'clip',
+          whiteSpace: 'nowrap',
+        },
+      },
+    },
     renderTopToolbarCustomActions: () => (
       <div className="flex items-center gap-2 px-2 py-1">
         <Switch
@@ -150,7 +193,7 @@ export function InstallersGrid({
       </div>
     ),
     initialState: { density: 'comfortable' },
-    state: { isLoading: loading, showProgressBars: loading },
+    state: { isLoading: loading, showProgressBars: loading, columnVisibility },
     muiTablePaperProps: {
       elevation: 0,
       sx: {
@@ -180,5 +223,9 @@ export function InstallersGrid({
     ),
   })
 
-  return <MaterialReactTable table={table} />
+  return (
+    <div ref={containerRef} className="min-w-0">
+      <MaterialReactTable table={table} />
+    </div>
+  )
 }

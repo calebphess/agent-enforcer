@@ -8,8 +8,10 @@ import {
 } from 'material-react-table'
 import { Download, PackageOpen } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-is-mobile'
+import { useResponsiveColumns } from '@/hooks/use-responsive-columns'
 import { StatusPill, TimeCell } from '@/components/data-cells'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -21,6 +23,16 @@ import {
 } from '@/components/ui/empty'
 import type { BundleDownload } from '@/lib/api'
 
+// Width reserved for the always-visible pair: truncating filename + Download.
+const PRIMARY_MIN_WIDTH = 300
+// Optional columns ordered highest → lowest priority (last drops first as the
+// grid gets thinner). Widths include cell padding so nothing overflows.
+const RESPONSIVE_COLUMNS = [
+  { key: 'assistant', minWidth: 150 },
+  { key: 'version', minWidth: 180 },
+  { key: 'built_at', minWidth: 150 },
+]
+
 export function BundlesGrid({
   bundles,
   loading,
@@ -30,6 +42,13 @@ export function BundlesGrid({
 }) {
   const isMobile = useIsMobile()
   const [showAll, setShowAll] = useState(false)
+
+  // Drop columns based on the width actually available to the grid (not the
+  // viewport); filename + Download always stay.
+  const { containerRef, columnVisibility } = useResponsiveColumns(
+    PRIMARY_MIN_WIDTH,
+    RESPONSIVE_COLUMNS,
+  )
 
   const rows = useMemo(() => {
     const all = bundles ?? []
@@ -46,10 +65,13 @@ export function BundlesGrid({
       {
         accessorKey: 'filename',
         header: 'Agent package',
-        size: 280,
+        size: 180,
         grow: true,
         Cell: ({ row }) => (
-          <span className="font-mono text-[13px] font-medium text-foreground">
+          <span
+            className="block max-w-full truncate font-mono text-[13px] font-medium text-foreground"
+            title={row.original.filename}
+          >
             {row.original.filename}
           </span>
         ),
@@ -57,10 +79,10 @@ export function BundlesGrid({
       {
         accessorKey: 'assistant',
         header: 'Assistant',
-        size: 150,
+        size: 140,
         filterVariant: 'select',
         Cell: ({ row }) => (
-          <span className="rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
+          <span className="whitespace-nowrap rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
             {row.original.assistant}
           </span>
         ),
@@ -70,7 +92,7 @@ export function BundlesGrid({
         header: 'Version',
         size: 170,
         Cell: ({ row }) => (
-          <span className="flex items-center gap-2">
+          <span className="flex items-center gap-2 whitespace-nowrap">
             <span className="font-mono text-xs text-ink">{row.original.version}</span>
             {row.original.latest && <StatusPill tone="gold">latest</StatusPill>}
           </span>
@@ -79,23 +101,28 @@ export function BundlesGrid({
       {
         accessorKey: 'built_at',
         header: 'Built',
-        size: 150,
+        size: 140,
         enableColumnFilter: false,
         Cell: ({ row }) => <TimeCell iso={row.original.built_at} />,
       },
       {
         id: 'download',
         header: '',
-        size: 130,
+        size: 120,
+        grow: false,
         enableColumnFilter: false,
         enableSorting: false,
+        enableColumnOrdering: false,
         Cell: ({ row }) => (
-          <Button asChild variant="outline" size="sm">
-            <a href={row.original.zip_url} download={row.original.filename}>
-              <Download data-icon="inline-start" />
-              Download
-            </a>
-          </Button>
+          <a
+            href={row.original.zip_url}
+            download={row.original.filename}
+            className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+            aria-label={`Download ${row.original.filename}`}
+          >
+            <Download data-icon="inline-start" />
+            <span className="hidden sm:inline">Download</span>
+          </a>
         ),
       },
     ],
@@ -113,7 +140,20 @@ export function BundlesGrid({
     enableFullScreenToggle: false,
     enableHiding: false,
     enableRowActions: false,
+    // Grid layout + a growing primary column lets the table fill its container
+    // without overflowing; dropped columns keep the rest on one line.
     layoutMode: 'grid',
+    muiTableHeadCellProps: {
+      sx: {
+        '& .Mui-TableHeadCell-Content': { overflow: 'visible' },
+        '& .Mui-TableHeadCell-Content-Labels': { overflow: 'visible' },
+        '& .Mui-TableHeadCell-Content-Wrapper': {
+          overflow: 'visible',
+          textOverflow: 'clip',
+          whiteSpace: 'nowrap',
+        },
+      },
+    },
     renderTopToolbarCustomActions: () => (
       <div className="flex items-center gap-2 px-2 py-1">
         <Switch
@@ -128,7 +168,7 @@ export function BundlesGrid({
       </div>
     ),
     initialState: { density: 'comfortable' },
-    state: { isLoading: loading, showProgressBars: loading },
+    state: { isLoading: loading, showProgressBars: loading, columnVisibility },
     muiTablePaperProps: {
       elevation: 0,
       sx: {
@@ -158,5 +198,9 @@ export function BundlesGrid({
     ),
   })
 
-  return <MaterialReactTable table={table} />
+  return (
+    <div ref={containerRef} className="min-w-0">
+      <MaterialReactTable table={table} />
+    </div>
+  )
 }
