@@ -132,7 +132,7 @@ export function InstallersGrid({
       },
       {
         id: 'download',
-        header: '',
+        header: 'Download',
         size: 120,
         grow: false,
         enableColumnFilter: false,

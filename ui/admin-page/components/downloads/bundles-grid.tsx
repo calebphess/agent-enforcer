@@ -107,7 +107,7 @@ export function BundlesGrid({
       },
       {
         id: 'download',
-        header: '',
+        header: 'Download',
         size: 120,
         grow: false,
         enableColumnFilter: false,
