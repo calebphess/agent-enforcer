@@ -65,7 +65,7 @@ export function AssistantCard({
             {beta && !comingSoon && (
               <span
                 title="Cursor has no global rules mechanism — rules bind at the workspace level via a managed AGENTS.md."
-                className="rounded-full bg-gold-tint px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-gold-dark"
+                className="inline-block rounded-full bg-gold-tint px-2 py-0.5 text-center text-[10px] font-bold leading-tight uppercase tracking-[0.12em] text-gold-dark"
               >
                 Per Workspace
               </span>
