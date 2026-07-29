@@ -21,6 +21,7 @@ __pycache__/
 
 # OS
 .DS_Store
+.playwright-mcp/
 
 # Local dev secrets (pushed to Secrets Manager via cdk/scripts/push-local-secrets.sh)
 secrets.local.yaml

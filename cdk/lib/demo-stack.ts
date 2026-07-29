@@ -298,7 +298,10 @@ export class DemoStack extends cdk.Stack {
         : baseSetup + '\n' + buildAndUpload(1),
     );
 
-    const demoInstanceType = ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.MICRO);
+    // Micro sizes are not in the Rocky 9 Marketplace product's supported
+    // instance list (verified via run-instances --dry-run) — t2.small is the
+    // smallest supported type in the t2 class
+    const demoInstanceType = ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.SMALL);
 
     const controlInstance = new ec2.Instance(this, 'ControlInstance', {
       vpc,
