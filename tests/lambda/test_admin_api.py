@@ -346,6 +346,37 @@ def test_stats_returns_license_and_document_counts(aws_resources):
     assert stats['assistants_enabled'] == 1  # claude-code default
 
 
+def test_stats_counts_unique_operating_systems(aws_resources):
+    m = aws_resources['module']
+    license_table = aws_resources['license_table']
+    token = _login(m)
+
+    license_table.put_item(Item={'license_id': 'COUNTER', 'active_count': 2, 'total_count': 3})
+    license_table.put_item(Item={
+        'license_id': 'lic-1', 'id': 1, 'user_id': 'user-1',
+        'agent_type': 'ROCKY9', 'agent_version': '0.3.0',
+        'machine_id': 'machine-1', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-19T00:00:00Z', 'active': True,
+    })
+    license_table.put_item(Item={
+        'license_id': 'lic-2', 'id': 2, 'user_id': 'user-2',
+        'agent_type': 'ROCKY9', 'agent_version': '0.3.0',
+        'machine_id': 'machine-2', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-19T00:00:00Z', 'active': True,
+    })
+    license_table.put_item(Item={
+        'license_id': 'lic-3', 'id': 3, 'user_id': 'user-3',
+        'agent_type': 'UBUNTU22', 'agent_version': '0.3.0',
+        'machine_id': 'machine-3', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-19T00:00:00Z', 'active': False,
+    })
+
+    resp = m.handler(_event('GET /admin/stats', token=token), None)
+    assert resp['statusCode'] == 200
+    stats = json.loads(resp['body'])
+    assert stats['unique_platforms'] == 2  # ROCKY9 + UBUNTU22; COUNTER excluded, inactive still counted
+
+
 def test_agents_lists_licenses_excluding_counter(aws_resources):
     m = aws_resources['module']
     license_table = aws_resources['license_table']

@@ -127,7 +127,7 @@ The following works are automatically protected by copyright upon creation (17 U
 | Agent Enforcer source code (all files in the repository) | Literary work (software) | Register as a single deposit; update registrations with major releases |
 | `agent-enforcer` bash script (the enforcement daemon) | Literary work (software) | Core IP — high priority |
 | Lambda function source code (config-generator, license, admin, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
-| Admin console web UI (design specification and application source) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`), the shipped Next.js application in `ui/` (dashboard, documents, fleet management with license deregistration, assistants + bundle viewer), and the console's distinctive navy/gold visual identity |
+| Admin console web UI (design specification and application source) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`), the shipped Next.js application in `ui/admin-page/` (dashboard, documents, fleet management with license deregistration, assistants + bundle viewer), and the console's distinctive navy/gold visual identity |
 | CDK stack definitions (TypeScript) | Literary work (software) | Infrastructure-as-code is copyrightable |
 | RPM spec file and packaging scripts | Literary work (software) | |
 | slicksheet.md / offer-letter.md marketing documents | Literary work | Register once finalized |

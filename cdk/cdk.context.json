@@ -57,5 +57,9 @@
     "us-east-1d",
     "us-east-1e",
     "us-east-1f"
-  ]
+  ],
+  "hosted-zone:account=008971674866:domainName=agent-enforcer.com:region=us-east-1": {
+    "Id": "/hostedzone/Z06900683M2EDT6FW1EG6",
+    "Name": "agent-enforcer.com."
+  }
 }

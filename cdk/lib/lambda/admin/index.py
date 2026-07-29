@@ -340,7 +340,26 @@ def _stats() -> dict:
         'max_licenses': max_licenses,
         'documents': len(documents),
         'assistants_enabled': sum(1 for enabled in assistants.values() if enabled),
+        'unique_platforms': len(_scan_agent_platforms(license_table)),
     })
+
+
+def _scan_agent_platforms(table) -> set:
+    """Distinct agent_type (OS/platform) values across all registered agents."""
+    platforms = set()
+    kwargs = {}
+    while True:
+        page = table.scan(**kwargs)
+        for item in page.get('Items', []):
+            if item.get('license_id') == 'COUNTER':
+                continue
+            platform = item.get('agent_type')
+            if platform:
+                platforms.add(platform)
+        if 'LastEvaluatedKey' not in page:
+            break
+        kwargs['ExclusiveStartKey'] = page['LastEvaluatedKey']
+    return platforms
 
 
 def _agents() -> dict:

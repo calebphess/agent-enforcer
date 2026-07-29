@@ -368,7 +368,7 @@ export class AgentEnforcerStack extends cdk.Stack {
     // Build the Next.js static export at synth time. Local bundling runs pnpm
     // straight from npx; the Docker image is the fallback (e.g. no node on
     // PATH). `exclude` keeps the asset hash driven by source files only.
-    const uiDir = path.join(__dirname, '../../ui');
+    const uiDir = path.join(__dirname, '../../ui/admin-page');
     const uiBuildCmds = [
       'npx -y pnpm@10 install --frozen-lockfile',
       'npx -y pnpm@10 run build',

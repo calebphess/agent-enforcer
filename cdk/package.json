@@ -10,9 +10,11 @@
     "deploy:demo:interactive": "npx cdk deploy AgentEnforcerStack DemoStack --context demoMode=interactive --context uiDomain=demo.agent-enforcer.com",
     "build:rpm": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s)",
     "build:rpm:custom": "npx cdk deploy RpmBuilderStack --context buildTimestamp=$(date +%s) --context builderAmi=${AMI_ID}",
-    "deploy:all": "npx cdk deploy --all --require-approval never",
-    "deploy:all:demo": "npx cdk deploy --all --require-approval never --context demoMode=interactive --context uiDomain=demo.agent-enforcer.com",
-    "destroy:all": "npx cdk destroy --all --force"
+    "deploy:all": "npx cdk deploy AgentEnforcerStack DemoStack RpmBuilderStack --require-approval never",
+    "deploy:all:demo": "npx cdk deploy AgentEnforcerStack DemoStack RpmBuilderStack --require-approval never --context demoMode=interactive --context uiDomain=demo.agent-enforcer.com",
+    "destroy:all": "npx cdk destroy AgentEnforcerStack DemoStack RpmBuilderStack --force",
+    "deploy:showcase": "npx cdk deploy ShowcaseStack",
+    "destroy:showcase": "npx cdk destroy ShowcaseStack --force"
   },
   "devDependencies": {
     "@types/node": "22.x",

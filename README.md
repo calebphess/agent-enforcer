@@ -145,9 +145,10 @@ aws s3 ls s3://agent-enforcer-dist-$(aws sts get-caller-identity --query Account
 
 ## Admin Console
 
-The web console source lives in `ui/` (Next.js static export, originally
-generated with Vercel V0 from `docs/ui/v0-prompt.md`). `cdk synth`/`deploy`
-build it automatically and publish it with `AgentEnforcerStack`.
+The web console source lives in `ui/admin-page/` (Next.js static export,
+originally generated with Vercel V0 from `docs/ui/v0-prompt.md`). `cdk
+synth`/`deploy` build it automatically and publish it with
+`AgentEnforcerStack`.
 
 - **Login**: defaults to `admin` / `password`. Override with `admin_username`
   / `admin_password` keys in the `agent-enforcer/config` secret.
