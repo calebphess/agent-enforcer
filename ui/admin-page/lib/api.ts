@@ -568,11 +568,20 @@ Returns a checklist of passed and failed policy rules.`,
     'AGENTS.md': `<!-- managed by agent-enforcer -->
 # Enforcement Rules
 
-- Use parameterized queries for all SQL.
 - Never print, log, or commit secrets or credentials.
-- Validate all external input at the boundary.
+- Use parameterized queries for all SQL.
+- Validate all external input at the boundary.`,
+    '.cursor/rules/secure-development.mdc': `---
+description: Secure coding standards for all code changes
+alwaysApply: false
+---
+<!-- managed by agent-enforcer -->
+
+- Type-hint all new Python functions; docstring every public API.
 - Run containers as a non-root user.
-- Type-hint all new Python functions; docstring every public API.`,
+- No magic numbers — named constants at module level.
+
+Sources: enforcement-doc-core.md`,
   },
 }
 

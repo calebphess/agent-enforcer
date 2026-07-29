@@ -342,7 +342,7 @@ MACHINE_ID=testmachineid12345678901234
 ENDPOINT=https://test.example.com/agent-enforcer
 REGISTERED_AT=2026-07-20T00:00:00Z
 EOF
-install_mock_curl 200 '{"files":{},"assistants":{"claude-code":true,"cursor":true},"bundles":{"claude-code":{"version":"1753751000000","files":{"CLAUDE.md":"https://mock/cc","settings.json":"https://mock/settings"}},"cursor":{"version":"1753751000000","files":{"AGENTS.md":"https://mock/agents"}}}}'
+install_mock_curl 200 '{"files":{},"assistants":{"claude-code":true,"cursor":true},"bundles":{"claude-code":{"version":"1753751000000","files":{"CLAUDE.md":"https://mock/cc","settings.json":"https://mock/settings"}},"cursor":{"version":"1753751000000","files":{"AGENTS.md":"https://mock/agents",".cursor/rules/secure-development.mdc":"https://mock/mdc"}}}}'
 rm -f "${FAKE_VAR}/applied-versions"
 rm -rf "${FAKE_VAR}/bundles"
 
@@ -351,6 +351,7 @@ assert_file_exists "claude-code bundle staged to store" "${FAKE_VAR}/bundles/cla
 assert_file_exists "cursor bundle staged to store" "${FAKE_VAR}/bundles/cursor/AGENTS.md"
 assert_file_exists "claude-code applied to user home" "${FAKE_HOMES}/demo/.claude/CLAUDE.md"
 assert_file_exists "cursor AGENTS.md applied to home root" "${FAKE_HOMES}/demo/AGENTS.md"
+assert_file_exists "cursor mdc rules applied to home workspace" "${FAKE_HOMES}/demo/.cursor/rules/secure-development.mdc"
 
 echo "Test 14b: sync writes applied-versions state"
 assert_file_exists "applied-versions state written" "${FAKE_VAR}/applied-versions"
@@ -369,6 +370,8 @@ echo "Test 16: sync removes managed AGENTS.md when cursor disabled"
 # Seed marker-managed files + one user-owned (no marker) file
 printf '<!-- managed by agent-enforcer -->\nrules\n' > "${FAKE_HOMES}/demo/AGENTS.md"
 printf '<!-- managed by agent-enforcer -->\nrules\n' > "${FAKE_HOMES}/demo/projects/webapp/AGENTS.md"
+mkdir -p "${FAKE_HOMES}/demo/projects/webapp/.cursor/rules"
+printf -- '---\ndescription: x\n---\n<!-- managed by agent-enforcer -->\nrules\n' > "${FAKE_HOMES}/demo/projects/webapp/.cursor/rules/managed.mdc"
 mkdir -p "${FAKE_HOMES}/demo/projects/user-owned"
 printf 'my own agents file\n' > "${FAKE_HOMES}/demo/projects/user-owned/AGENTS.md"
 touch "${FAKE_VAR}/cursor-applied"
@@ -387,6 +390,11 @@ else
   _pass "managed project AGENTS.md removed on disable"
 fi
 assert_file_exists "user-owned AGENTS.md preserved" "${FAKE_HOMES}/demo/projects/user-owned/AGENTS.md"
+if [[ -f "${FAKE_HOMES}/demo/projects/webapp/.cursor/rules/managed.mdc" ]]; then
+  _fail "managed mdc rules removed on disable"
+else
+  _pass "managed mdc rules removed on disable"
+fi
 if [[ -d "${FAKE_VAR}/bundles/cursor" ]]; then
   _fail "cursor store pruned when absent from response"
 else

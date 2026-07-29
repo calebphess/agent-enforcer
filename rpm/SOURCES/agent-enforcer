@@ -771,14 +771,14 @@ apply_cursor() {
       read -r uid gid <<< "$(_stat_ug "$home_dir")"
 
       # Home root — binds when the workspace is (under) the home dir
-      _install_cursor_rules "$agents_file" "${home_dir}/AGENTS.md" "$uid" "$gid"
+      _install_cursor_workspace "$store" "$home_dir" "$uid" "$gid"
 
       # Every project (git repo) under the home, searched fresh each cycle —
       # cursor has no global rules location, so coverage is per-workspace
       local git_dir project_dir
       while IFS= read -r git_dir; do
         project_dir=$(dirname "$git_dir")
-        _install_cursor_rules "$agents_file" "${project_dir}/AGENTS.md" "$uid" "$gid"
+        _install_cursor_workspace "$store" "$project_dir" "$uid" "$gid"
       done < <(find "$home_dir" -maxdepth 3 -name .git -type d 2>/dev/null)
     done < <(_home_dirs)
     touch "${STATE_DIR}/cursor-applied"
@@ -789,20 +789,44 @@ apply_cursor() {
     while IFS= read -r home_dir; do
       [[ -z "$home_dir" ]] && continue
       while IFS= read -r target; do
-        if head -n1 "$target" 2>/dev/null | grep -qF "$CURSOR_MARKER"; then
+        if _is_managed_cursor_file "$target"; then
           rm -f "$target"
         fi
-      done < <(find "$home_dir" -maxdepth 4 -name AGENTS.md -type f 2>/dev/null)
+      done < <(find "$home_dir" -maxdepth 6 \( -name AGENTS.md -o -name '*.mdc' \) -type f 2>/dev/null)
+      # Drop now-empty managed rules dirs
+      find "$home_dir" -maxdepth 5 -type d -path '*/.cursor/rules' -empty -delete 2>/dev/null || true
     done < <(_home_dirs)
     rm -f "${STATE_DIR}/cursor-applied"
   fi
 }
 
-# Installs the managed AGENTS.md at a target path unless a user-owned (non-
-# managed) file already exists there — never clobber customer content.
-_install_cursor_rules() {
+# The managed marker is line 1 for AGENTS.md and sits just after the YAML
+# frontmatter for .mdc rule files — check the first few lines
+_is_managed_cursor_file() {
+  head -n 6 "$1" 2>/dev/null | grep -qF "$CURSOR_MARKER"
+}
+
+# Installs the full cursor bundle (AGENTS.md + .cursor/rules/*.mdc) into a
+# workspace. Never clobbers user-owned (non-managed) files.
+_install_cursor_workspace() {
+  local store="$1" workspace="$2" uid="$3" gid="$4"
+
+  _install_cursor_file "${store}/AGENTS.md" "${workspace}/AGENTS.md" "$uid" "$gid"
+
+  if [[ -d "${store}/.cursor/rules" ]]; then
+    mkdir -p "${workspace}/.cursor/rules"
+    local rules_file base
+    while IFS= read -r rules_file; do
+      base=$(basename "$rules_file")
+      _install_cursor_file "$rules_file" "${workspace}/.cursor/rules/${base}" "$uid" "$gid"
+    done < <(find "${store}/.cursor/rules" -maxdepth 1 -name '*.mdc' -type f 2>/dev/null)
+    chown "${uid}:${gid}" "${workspace}/.cursor" "${workspace}/.cursor/rules" 2>/dev/null || true
+  fi
+}
+
+_install_cursor_file() {
   local src="$1" target="$2" uid="$3" gid="$4"
-  if [[ -f "$target" ]] && ! head -n1 "$target" 2>/dev/null | grep -qF "$CURSOR_MARKER"; then
+  if [[ -f "$target" ]] && ! _is_managed_cursor_file "$target"; then
     return 0
   fi
   cp -p "$src" "$target"

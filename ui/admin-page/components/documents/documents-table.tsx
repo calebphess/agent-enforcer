@@ -33,23 +33,10 @@ const PRIMARY_MIN_WIDTH = 260
 // Optional columns ordered highest → lowest priority (last drops first as the
 // grid gets thinner). Widths include cell padding so nothing overflows.
 const RESPONSIVE_COLUMNS = [
-  { key: 'inclusion', minWidth: 210 },
   { key: 'status', minWidth: 170 },
   { key: 'version', minWidth: 150 },
   { key: 'updated', minWidth: 200 },
 ]
-
-const ASSISTANT_SHORT: Record<string, string> = { 'claude-code': 'CC', cursor: 'CU' }
-const STATE_TONE: Record<DocBuildState, 'gold' | 'danger' | 'muted'> = {
-  current: 'gold',
-  stale: 'danger',
-  missing: 'muted',
-}
-const STATE_LABEL: Record<DocBuildState, string> = {
-  current: 'In latest',
-  stale: 'Stale',
-  missing: 'Not included',
-}
 // Columns hidden by default; users can re-enable them via the column menu.
 const ALWAYS_HIDDEN = {
   description: false,
@@ -80,6 +67,22 @@ export function DocumentsTable({
     for (const d of buildStatus?.documents ?? []) map[d.filename] = d.status
     return map
   }, [buildStatus])
+
+  // Tracked = the doc's current content is in at least one assistant's latest
+  // build; Pending = uploaded but not yet processed into any bundle. While
+  // build status is still loading, default to Tracked to avoid a Pending flash.
+  const docState = useMemo(
+    () =>
+      (filename: string): 'Tracked' | 'Pending' => {
+        if (!buildStatus) return 'Tracked'
+        const status = statusByFilename[filename]
+        if (!status) return 'Pending'
+        return GENERATABLE_ASSISTANTS.some((a) => status[a] === 'current')
+          ? 'Tracked'
+          : 'Pending'
+      },
+    [buildStatus, statusByFilename],
+  )
 
   // Drop columns based on the width actually available to the grid (not the
   // viewport), keeping Name and dropping the rest from lowest priority up as
@@ -172,53 +175,29 @@ export function DocumentsTable({
       },
       {
         id: 'status',
-        accessorFn: (row) => (row.deleted ? 'Deleted' : 'Tracked'),
+        accessorFn: (row) => (row.deleted ? 'Deleted' : docState(row.filename)),
         header: 'Status',
-        size: 130,
+        size: 140,
         filterVariant: 'select',
-        Cell: ({ row }) =>
-          row.original.deleted ? (
-            <StatusPill tone="danger">Deleted</StatusPill>
-          ) : (
-            <StatusPill tone="gold">Tracked</StatusPill>
-          ),
-      },
-      {
-        id: 'inclusion',
-        header: 'In latest packages',
-        size: 190,
-        enableColumnFilter: false,
-        enableSorting: false,
-        accessorFn: (row) =>
-          GENERATABLE_ASSISTANTS.map(
-            (a) => statusByFilename?.[row.filename]?.[a] ?? 'missing',
-          ).join(','),
         Cell: ({ row }) => {
-          if (row.original.deleted) return <span className="text-muted-foreground">—</span>
-          const status = statusByFilename?.[row.original.filename]
+          if (row.original.deleted) return <StatusPill tone="danger">Deleted</StatusPill>
+          const state = docState(row.original.filename)
+          if (state === 'Tracked') {
+            return (
+              <span title="Included in the latest generated bundles">
+                <StatusPill tone="gold">Tracked</StatusPill>
+              </span>
+            )
+          }
           return (
-            <span className="flex flex-wrap gap-1.5">
-              {GENERATABLE_ASSISTANTS.map((a) => {
-                if (!buildStatus?.builds?.[a]) return null // assistant never built
-                const state: DocBuildState = status?.[a] ?? 'missing'
-                return (
-                  <StatusPill
-                    key={a}
-                    tone={STATE_TONE[state]}
-                  >
-                    {ASSISTANT_SHORT[a] ?? a} · {STATE_LABEL[state]}
-                  </StatusPill>
-                )
-              })}
-              {GENERATABLE_ASSISTANTS.every((a) => !buildStatus?.builds?.[a]) && (
-                <span className="text-xs text-muted-foreground">No builds yet</span>
-              )}
+            <span title="Uploaded but not yet part of any generated bundle — processing or awaiting the next build">
+              <StatusPill tone="muted">Pending</StatusPill>
             </span>
           )
         },
       },
     ],
-    [buildStatus, statusByFilename],
+    [docState],
   )
 
   const table = useMaterialReactTable({

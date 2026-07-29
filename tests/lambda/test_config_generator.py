@@ -423,3 +423,32 @@ def test_pdf_upload_registers_document(aws_resources):
     assert len(items) == 1
     assert items[0]['filename'] == 'NIST.SP.800-53r5.pdf'
     assert items[0]['created_by'] == 's3-upload'
+
+
+def test_cursor_mdc_files_get_managed_marker(aws_resources):
+    """The marker is injected after mdc frontmatter when the model omits it."""
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    _enable_cursor(aws_resources['documents_table'])
+
+    def fake(docs, system_prompt=m.SYSTEM_PROMPT):
+        if system_prompt == m.CURSOR_SYSTEM_PROMPT:
+            return {'files': {
+                'AGENTS.md': '# Rules without marker',
+                '.cursor/rules/db.mdc': '---\ndescription: db rules\nalwaysApply: false\n---\n- use params\n\nSources: core.md',
+            }}
+        return {'files': {'CLAUDE.md': '# Generated rules'}}
+
+    m._call_bedrock = fake
+    s3.put_object(Bucket=SOURCE_BUCKET, Key='core.md', Body=b'# rules')
+
+    m.handler(_s3_event('core.md'), None)
+
+    agents = s3.get_object(Bucket=DIST_BUCKET, Key='cursor/latest/AGENTS.md')['Body'].read().decode()
+    assert agents.startswith('<!-- managed by agent-enforcer -->')
+    mdc = s3.get_object(Bucket=DIST_BUCKET, Key='cursor/latest/.cursor/rules/db.mdc')['Body'].read().decode()
+    lines = mdc.split('\n')
+    # Marker sits immediately after the closing frontmatter delimiter (line 3)
+    assert lines[0] == '---'
+    assert lines[3] == '---'
+    assert lines[4] == '<!-- managed by agent-enforcer -->', lines[:6]

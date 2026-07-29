@@ -32,10 +32,18 @@ from datetime import datetime, timezone
 from urllib.parse import unquote_plus
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 s3 = boto3.client('s3')
-bedrock = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+# Long-form synthesis can stream for several minutes — botocore's default
+# 60s read timeout kills it mid-generation (ReadTimeoutError). Retries stay
+# off here; _invoke_model handles backoff itself.
+bedrock = boto3.client(
+    'bedrock-runtime',
+    region_name=os.environ.get('AWS_REGION', 'us-east-1'),
+    config=BotoConfig(read_timeout=840, connect_timeout=10, retries={'max_attempts': 0}),
+)
 dynamodb = boto3.resource('dynamodb')
 
 DIST_BUCKET = os.environ['DIST_BUCKET']
@@ -129,24 +137,43 @@ Return a single JSON object. No markdown fencing, no prose outside the JSON.
 - CLAUDE.md must be under 100 words and contain NO actual rules — only triggers.
 - Merge overlapping rules across documents into skills — no repetition.
 - settings.json must be a JSON object (not a string).
-- Skills are self-contained — a developer can read them without seeing CLAUDE.md."""
+- Skills are self-contained — a developer can read them without seeing CLAUDE.md.
+- Every skill and command file MUST end with a line `Sources: <document names>`
+  listing which source enforcement documents its rules came from, so auditors
+  can trace each rule set back to policy."""
 
-CURSOR_SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into a Cursor rules file.
+CURSOR_SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into a Cursor rules bundle.
 
 ## How Cursor loads rules — read this carefully
 
-Cursor reads a single AGENTS.md file at the workspace root. Unlike Claude Code
-there is NO lazy loading: every word of AGENTS.md is in context for every
-request. Terseness is mandatory — the whole file must stay under 500 words.
+Cursor reads two things from a workspace:
+- **AGENTS.md** at the workspace root — always in context, every word costs
+  tokens on every request. Terseness is mandatory: under 300 words.
+- **.cursor/rules/*.mdc** files — scoped rule files with YAML frontmatter.
+  `alwaysApply: false` rules load only when their description matches the
+  task, so they are the right place for detailed domain rule sets (like
+  Claude Code skills).
 
-## Rules for the output
+## Allocation rules — follow exactly
 
-- Imperative, terse, deduplicated rules. No prose, no rationale, no headers
-  beyond simple section labels.
-- Merge overlapping rules across documents; keep only what changes how code is
-  written, reviewed, or secured.
-- The FIRST LINE of AGENTS.md must be exactly:
-  <!-- managed by agent-enforcer -->
+**AGENTS.md** contains ONLY the always-on essentials: a one-line enforcement
+header and the handful of universal rules (secrets, injection, validation).
+Under 300 words. First line must be exactly:
+<!-- managed by agent-enforcer -->
+
+**.cursor/rules/NAME.mdc** files carry the detailed, domain-specific rules —
+one file per domain (e.g. secure-development, database-security,
+container-security). Each starts with YAML frontmatter:
+
+---
+description: <when these rules apply, one line>
+alwaysApply: false
+---
+<!-- managed by agent-enforcer -->
+
+then the full rules for that domain. Every .mdc file MUST end with a line
+`Sources: <document names>` listing which source enforcement documents its
+rules came from.
 
 ## Output format
 
@@ -154,7 +181,8 @@ Return a single JSON object. No markdown fencing, no prose outside the JSON.
 
 {
   "files": {
-    "AGENTS.md": "<the complete rules file, first line the managed marker, under 500 words>"
+    "AGENTS.md": "<always-on essentials, first line the managed marker, under 300 words>",
+    ".cursor/rules/NAME.mdc": "<frontmatter + managed marker + domain rules + Sources line>"
   },
   "version": "<YYYY-MM-DD>"
 }"""
@@ -459,12 +487,26 @@ def _call_bedrock(docs: dict, system_prompt: str = SYSTEM_PROMPT) -> dict:
 
 
 def _ensure_cursor_marker(files: dict) -> dict:
-    """Guarantee the managed marker leads AGENTS.md regardless of model output."""
-    content = files.get('AGENTS.md')
-    if isinstance(content, str) and not content.startswith(CURSOR_MANAGED_MARKER):
-        files = dict(files)
-        files['AGENTS.md'] = f'{CURSOR_MANAGED_MARKER}\n{content}'
-    return files
+    """Guarantee the managed marker appears in every cursor file regardless of
+    model output: line 1 of AGENTS.md, just after the YAML frontmatter for
+    .mdc rule files. The agent only touches marker-bearing files."""
+    out = dict(files)
+    for path, content in files.items():
+        if not isinstance(content, str) or CURSOR_MANAGED_MARKER in content.split('\n', 6)[:6]:
+            continue
+        if path == 'AGENTS.md':
+            out[path] = f'{CURSOR_MANAGED_MARKER}\n{content}'
+        elif path.endswith('.mdc'):
+            lines = content.split('\n')
+            insert_at = 0
+            if lines and lines[0].strip() == '---':
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == '---':
+                        insert_at = i + 1
+                        break
+            lines.insert(insert_at, CURSOR_MANAGED_MARKER)
+            out[path] = '\n'.join(lines)
+    return out
 
 
 # ---------------------------------------------------------------------------

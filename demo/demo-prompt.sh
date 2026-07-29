@@ -47,12 +47,17 @@ echo ""
 STREAM_FILE="${RUN_DIR}/output/session-stream.jsonl"
 
 if [[ "$ASSISTANT" == "cursor" ]]; then
-  # Cursor has no global rules file — materialize the agent-enforcer-managed
-  # AGENTS.md into the run workspace so enforcement binds to this run
+  # Cursor has no global rules location — materialize the agent-enforcer-
+  # managed rules (AGENTS.md + .cursor/rules) into the run workspace so
+  # enforcement binds to this run
   if [[ -f /home/demo/AGENTS.md ]]; then
     cp /home/demo/AGENTS.md "${RUN_DIR}/project/AGENTS.md"
-    chown demo:demo "${RUN_DIR}/project/AGENTS.md"
   fi
+  if [[ -d /home/demo/.cursor/rules ]]; then
+    mkdir -p "${RUN_DIR}/project/.cursor"
+    cp -r /home/demo/.cursor/rules "${RUN_DIR}/project/.cursor/rules"
+  fi
+  chown -R demo:demo "${RUN_DIR}/project"
 
   # Cursor User API key fetched at run time — never persisted to disk
   CURSOR_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$CURSOR_KEY_SECRET_NAME" \
