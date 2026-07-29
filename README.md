@@ -143,20 +143,64 @@ aws s3 ls s3://agent-enforcer-dist-$(aws sts get-caller-identity --query Account
 
 ---
 
+## Admin Console
+
+The web console source lives in `ui/admin-page/` (Next.js static export,
+originally generated with Vercel V0 from `docs/ui/v0-prompt.md`). `cdk
+synth`/`deploy` build it automatically and publish it with
+`AgentEnforcerStack`.
+
+- **Login**: defaults to `admin` / `password`. Override with `admin_username`
+  / `admin_password` keys in the `agent-enforcer/config` secret.
+- **Dashboard**: license usage vs. limit, registered agents, document count,
+  assistants enforcing.
+- **Documents**: upload enforcement `.md` docs (name auto-fills from the
+  filename), edit descriptions, download originals, soft-delete with
+  automatic bundle regeneration. Docs uploaded directly via `aws s3 cp` are
+  auto-registered.
+- **Fleet**: every registered agent with last check-in; de-register an agent
+  to deactivate its license and free the slot (its next sync is refused).
+- **Assistants**: enable/disable config generation per coding assistant
+  (Claude Code live today; Kiro, Cursor, and GitHub Copilot toggles are
+  forward-looking), plus a bundle viewer showing the generated files.
+
+**Where it's served** (one S3 website bucket, two modes):
+
+- *Private DNS (default)*: the stack creates a Route 53 **private** hosted
+  zone (`agent-enforcer.internal` by default, `-c uiInternalDomain=<domain>`
+  to change) with `ui.<domain>` pointing at the bucket's website endpoint —
+  self-contained DNS for customer accounts that don't use public Route 53.
+  The name resolves only inside VPCs associated with the zone (`-c uiVpcId`
+  associates yours at deploy); the `UiWebsiteEndpoint` output is the direct
+  URL that always works.
+- *Public domain* (`-c uiDomain=demo.agent-enforcer.com`, used by
+  `npm run deploy:all:demo` and `deploy:demo:interactive`): CloudFront with
+  an ACM certificate and Route 53 alias records in your public hosted zone —
+  HTTPS at the custom domain in the `UiUrl` output.
+
+**Local frontend dev**: `cd ui && NEXT_PUBLIC_USE_MOCKS=true npx -y pnpm@10 dev`
+for mock data, or set `NEXT_PUBLIC_API_BASE` to a deployed `ApiEndpoint` to
+work against the real backend (CORS is already open).
+
+---
+
 ## Installing the Agent (Rocky Linux / RHEL)
 
 ```bash
 # Download latest RPM
-aws s3 cp s3://agent-enforcer-rpm/agent-enforcer-0.1.0-1.noarch.rpm /tmp/
+aws s3 cp s3://agent-enforcer-rpm/agent-enforcer-<version>-1.noarch.rpm /tmp/
 
-# Install
-sudo rpm -ivh /tmp/agent-enforcer-0.1.0-1.noarch.rpm
+# Install — no -v needed; the installer prints a clean banner with next steps
+sudo rpm -i /tmp/agent-enforcer-<version>-1.noarch.rpm
 
-# Configure with your enforcement bucket
-sudo agent-enforcer configure --bucket agent-enforcer-dist-<account-id>
+# Register with the enforcement API
+sudo agent-enforcer register
 
 # Check status
 agent-enforcer status
+
+# Customer-facing summary — banner, enforcement status, enforced assistants
+sudo agent-enforcer describe
 ```
 
 The service starts on boot, does nothing until configured, then syncs every 15 minutes.
@@ -164,6 +208,8 @@ The service starts on boot, does nothing until configured, then syncs every 15 m
 ---
 
 ## Demo Flow
+
+Shared prerequisites for both modes:
 
 1. Deploy `AgentEnforcerStack` — enforcement infrastructure is live
 2. Upload `demo/enforcement-doc-core.md` to the source bucket (or redeploy to trigger automatic upload):
@@ -173,11 +219,44 @@ The service starts on boot, does nothing until configured, then syncs every 15 m
    ```
 3. Verify `claude-code/latest/CLAUDE.md` appears in the dist bucket
 4. Build and upload the RPM: `cd cdk && npm run build:rpm`
-5. Deploy `DemoStack` — two instances start, run Claude Code, upload results, self-terminate
+
+### Auto-run demo (default)
+
+5. Deploy `DemoStack` (`npm run deploy:demo`) — two instances start, run Claude
+   Code against the fixed spec, upload results, self-terminate
 6. Check results (~15–20 min after deploy):
    ```
    https://agent-enforcer-results-<account>.s3.amazonaws.com/results.md
    ```
+
+### Interactive customer demo
+
+Both instances come up and **stay up** so you can drive them live with a
+customer-supplied prompt:
+
+5. `npm run deploy:demo:interactive` (deploys with `--context demoMode=interactive`)
+6. Open the `ControlSessionUrl` and `EnforcedSessionUrl` stack outputs in two
+   browser tabs (Session Manager terminals — no SSH keys needed). Wait for
+   setup to finish: `sudo tail -f /var/log/demo-setup.log`
+7. On the enforced box, show the customer it's under enforcement:
+   ```bash
+   sudo agent-enforcer describe
+   ```
+8. Run the **identical** command on both boxes (copy-paste it — the run id is
+   derived from the prompt text so both uploads land in the same run):
+   ```bash
+   sudo demo-prompt "Build a task manager REST API in Python with SQLite"
+   ```
+   Each terminal streams Claude Code's progress live. If the prompts diverged
+   by accident, re-run one side with `sudo DEMO_RUN_ID=<id> demo-prompt "..."`.
+9. When both finish, each box prints the same results URL — open it (allow a
+   minute or two for the Bedrock comparison):
+   ```
+   https://agent-enforcer-results-<account>.s3.amazonaws.com/runs/<run-id>/results.md
+   ```
+   Each new prompt gets its own `runs/<run-id>/` comparison.
+10. Interactive instances never self-terminate — run `npm run destroy:all`
+    when the demo is over. Switching `demoMode` replaces both instances.
 
 ---
 

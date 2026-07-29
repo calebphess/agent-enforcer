@@ -1,5 +1,5 @@
 Name:           agent-enforcer
-Version:        0.2.4
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        AI Configuration Enforcement Agent — syncs .claude/ configs via enforcement API
 License:        Proprietary
@@ -36,7 +36,7 @@ install -dm 0750 %{buildroot}%{_sysconfdir}/agent-enforcer
 install -dm 0755 %{buildroot}%{_localstatedir}/lib/agent-enforcer
 
 # Version file — readable by agent for self-reporting and demo
-install -Dm 0644 /dev/stdin %{buildroot}%{_prefix}/lib/agent-enforcer/version <<< "0.2.1"
+install -Dm 0644 /dev/stdin %{buildroot}%{_prefix}/lib/agent-enforcer/version <<< "%{version}"
 
 %files
 %{_bindir}/agent-enforcer
@@ -50,14 +50,12 @@ install -Dm 0644 /dev/stdin %{buildroot}%{_prefix}/lib/agent-enforcer/version <<
 %post
 %systemd_post agent-enforcer.service
 /usr/bin/systemctl enable agent-enforcer.service >/dev/null 2>&1 || :
-echo ""
-echo "Agent Enforcer v0.2.1 installed successfully."
-echo ""
-echo "Register this agent before it will sync:"
-echo "  sudo agent-enforcer register"
-echo ""
-echo "For non-interactive registration:"
-echo "  sudo agent-enforcer register --no-prompt --user-id <your-id> --endpoint <api-url>"
+# Banner lives in the agent script (quoted heredoc) — rpm macro-expands % in
+# scriptlets, so the art must never be inlined here. Never fail the install
+# on cosmetics.
+/usr/bin/agent-enforcer banner || :
+echo "  Register this agent:   sudo agent-enforcer register"
+echo "  Check status:          agent-enforcer status"
 echo ""
 
 %preun
@@ -67,6 +65,15 @@ echo ""
 %systemd_postun_with_restart agent-enforcer.service
 
 %changelog
+* Sun Jul 19 2026 Agent Enforcer Team <noreply@example.com> - 0.3.0-1
+- Add install-time ASCII banner (agent-enforcer banner) — clean rpm -i output
+- Fix hardcoded 0.2.1 strings in %%post and version file; use %%{version}
+- Add admin web UI backend: documents table, /admin API, UI hosting bucket
+- Add per-assistant config generation toggles (claude-code gating functional)
+- Auto-register direct S3 uploads in the documents registry
+- Add 'describe' command: banner + enforcement status + enforced assistants
+- Sync persists per-assistant toggles from the license API to agent state
+
 * Tue Jun 24 2026 Agent Enforcer Team <noreply@example.com> - 0.2.1-1
 - Add license registration system (DynamoDB-backed via REST API)
 - Replace direct S3 sync with API-based presigned URL distribution

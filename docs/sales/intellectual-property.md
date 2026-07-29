@@ -29,6 +29,8 @@ A system architecture in which a central policy authority (S3-compatible object 
 - The use of a polling-based daemon service to enforce AI agent behavior at the system level (as opposed to application-level or user-level configuration)
 - Automatic application of policy to any AI coding session initiated by any user on the host, regardless of which user account initiates the session
 - Version-controlled policy distribution enabling auditability of which policy was active at time of any given AI session
+- Operator-driven revocation through the same channel: de-registering an agent from the central control plane deactivates its license, and the endpoint's next sync is refused — enforcement withdrawal propagates without touching the endpoint
+- Control-plane inspection of the exact generated enforcement artifacts (bundle viewer) — the operator audits what endpoints will receive before and after distribution
 
 **Distinguishing from prior art:**
 Prior art in AI configuration (e.g., `.env` files, application config) is user-managed and session-specific. This system enforces policy at the OS service level independent of user action, across all users on a host, with automatic propagation of updates from a central authority.
@@ -44,6 +46,12 @@ A method in which natural language organizational policy documents (security req
 - The specific pipeline: natural language policy document → LLM transformation → structured AI agent configuration bundle → automatic distribution to enforcement endpoints
 - The schema of the output bundle (CLAUDE.md + settings.json + skills/ + commands/) as a defined artifact format for AI agent governance
 - The triggering mechanism: any upload to the policy source triggers re-ingestion of all policy documents and regeneration of the complete bundle (not just the changed document)
+- Per-assistant selective generation gating: administrator-controlled toggles that enable or disable bundle generation per target AI coding assistant (Claude Code, Kiro, Cursor, GitHub Copilot), evaluated by the generation pipeline before each regeneration (added v0.3.0)
+- A centralized policy-document registry with versioned, soft-delete lifecycle metadata (creation/update attribution, monotonic version counter) that is kept bidirectionally consistent with the object store: documents uploaded directly to storage are auto-registered from storage events, and registry deletions remove the source object and trigger bundle regeneration without the removed policy (added v0.3.0)
+- Multi-format policy ingestion with map-reduce distillation: large compliance PDFs (e.g., the 492-page NIST SP 800-53r5) are text-extracted, chunked, and distilled by a fast LLM pass that retains only software-development-relevant controls, with the distillate cached by content hash (ETag) so unrelated re-uploads never repeat the extraction; the distilled text then joins the standard synthesis pipeline, keeping the emitted bundle token-lean regardless of source document size (added v1.0.0)
+- Multi-assistant generation with per-assistant output grammars: the same policy corpus is transformed per target assistant using assistant-specific system prompts and bundle schemas (lazy-loading skills bundle for Claude Code; a single lean marker-guarded AGENTS.md for Cursor, which lacks lazy loading), gated per assistant by the administrator toggles (added v1.0.0)
+- Versioned, auditable build artifacts: every generation run is stamped with an epoch-millisecond version; a build ledger records exactly which source documents (keys + content hashes) produced each bundle, enabling per-document staleness reporting ("is this policy in the latest package?") and immutable downloadable zip artifacts named `<assistant>.<version>.zip` (added v1.0.0)
+- Closed-loop version attestation: agents report the bundle version they last applied on every sync; the fleet console displays per-host applied-config versions, giving compliance officers evidence of policy propagation (added v1.0.0)
 
 **Distinguishing from prior art:**
 Existing LLM configuration is either hand-authored or application-specific. The novel element is the automated pipeline from organizational policy documents through LLM transformation to a distributed, system-enforced configuration bundle at scale.
@@ -105,6 +113,7 @@ The following constitute protectable trade secrets under the Defend Trade Secret
 | Asset | Why It Qualifies | Protection Steps Needed |
 |-------|-----------------|------------------------|
 | The specific LLM prompt engineering used by the config-generator Lambda to transform policy documents into enforcement bundles | Derives value from not being public; competitors cannot easily replicate without knowing the prompt structure | Mark as confidential; limit access; NDA for anyone who sees it |
+| The PDF distillation prompt set and chunking parameters (what to keep vs. discard from compliance frameworks, chunk sizing, relevance criteria) | The distillation quality — extracting only developer-actionable controls from 500-page frameworks — is the product's efficiency moat | Mark as confidential; limit access; NDA for anyone who sees it |
 | The schema and structure of the enforcement bundle (CLAUDE.md + settings.json + skills/ + commands/) as a complete artifact format | Represents significant R&D investment in what an AI governance artifact should contain | Document as proprietary; include in IP assignment agreements with employees/contractors |
 | The enforcement document templates authored for customers by Managed Enforcement Specialists | Customer-specific but the templates themselves represent proprietary methodology | Employment and contractor agreements must assign ownership; NDA with customers covering co-developed materials |
 | The methodology for translating organizational compliance frameworks (NIST, CMMC, FedRAMP) into AI enforcement documentation | Expertise-based, high value, not obvious to competitors | Treat as proprietary methodology; document in internal playbooks marked confidential |
@@ -122,7 +131,8 @@ The following works are automatically protected by copyright upon creation (17 U
 |------|------|-------|
 | Agent Enforcer source code (all files in the repository) | Literary work (software) | Register as a single deposit; update registrations with major releases |
 | `agent-enforcer` bash script (the enforcement daemon) | Literary work (software) | Core IP — high priority |
-| Lambda function source code (config-generator, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
+| Lambda function source code (config-generator, license, admin, analysis, self-destruct) | Literary work (software) | Register together with the main codebase |
+| Admin console web UI (design specification and application source) | Literary work (software) + visual design | Includes the V0 design specification (`docs/ui/v0-prompt.md`), the shipped Next.js application in `ui/admin-page/` (dashboard, documents, fleet management with license deregistration, assistants + bundle viewer), and the console's distinctive navy/gold visual identity |
 | CDK stack definitions (TypeScript) | Literary work (software) | Infrastructure-as-code is copyrightable |
 | RPM spec file and packaging scripts | Literary work (software) | |
 | slicksheet.md / offer-letter.md marketing documents | Literary work | Register once finalized |

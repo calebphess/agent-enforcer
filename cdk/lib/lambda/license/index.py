@@ -10,8 +10,12 @@ Handles two routes dispatched by API Gateway HTTP API:
 
   POST /agent-enforcer/sync
     - Validates license (active + machine_id match)
-    - Updates last_used_date
-    - Lists dist bucket prefix claude-code/latest/ and returns presigned URLs per file
+    - Updates last_used_date; persists agent-reported applied_versions/agent_version
+    - Returns per-assistant bundle manifests (presigned latest/ URLs + build
+      version) for every enabled generatable assistant, plus the legacy
+      claude-code `files` map for pre-1.0 agents
+    - Returns the per-assistant enforcement toggles (documents table SETTINGS item)
+      so agents can report what they enforce via `agent-enforcer describe`
 
 Environment variables are read at handler call time (not import time) so that tests
 can inject mocked values without import-order issues.
@@ -23,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource('dynamodb')
@@ -30,6 +35,12 @@ s3_client = boto3.client('s3')
 sm_client = boto3.client('secretsmanager')
 
 PRESIGNED_EXPIRY = 600  # 10 minutes
+
+KNOWN_ASSISTANTS = ('claude-code', 'kiro', 'cursor', 'github-copilot')
+DEFAULT_ASSISTANTS = {name: (name == 'claude-code') for name in KNOWN_ASSISTANTS}
+
+# Assistants with a working generation pipeline (bundles served on sync)
+GENERATABLE_ASSISTANTS = ('claude-code', 'cursor')
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -210,20 +221,36 @@ def _sync(body: dict) -> dict:
                                     'To use this license on a new host, perform a license transfer.'})
 
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    update_expr = 'SET last_used_date = :now'
+    expr_values = {':now': now}
+
+    # Agents report what they have applied so the fleet console can show it
+    applied_versions = body.get('applied_versions')
+    if isinstance(applied_versions, dict) and applied_versions:
+        update_expr += ', applied_versions = :av'
+        expr_values[':av'] = {str(k): str(v) for k, v in applied_versions.items()}
+    agent_version = (body.get('agent_version') or '').strip()
+    if agent_version:
+        update_expr += ', agent_version = :agv'
+        expr_values[':agv'] = agent_version
+
     table.update_item(
         Key={'license_id': license_id},
-        UpdateExpression='SET last_used_date = :now',
-        ExpressionAttributeValues={':now': now},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values,
     )
 
-    files = _generate_presigned_urls()
-    print(f"Sync for license {license_id}: returned {len(files)} presigned URLs")
-    return _resp(200, {'files': files})
+    assistants = _get_assistants()
+    files = _generate_presigned_urls('claude-code') if assistants.get('claude-code') else {}
+    bundles = _get_bundles(assistants)
+    print(f"Sync for license {license_id}: {len(files)} legacy URLs, "
+          f"{len(bundles)} bundle(s)")
+    return _resp(200, {'files': files, 'assistants': assistants, 'bundles': bundles})
 
 
-def _generate_presigned_urls() -> dict:
+def _generate_presigned_urls(assistant: str) -> dict:
     dist_bucket = os.environ['DIST_BUCKET']
-    prefix = 'claude-code/latest/'
+    prefix = f'{assistant}/latest/'
     files = {}
     paginator = s3_client.get_paginator('list_objects_v2')
     for page in paginator.paginate(Bucket=dist_bucket, Prefix=prefix):
@@ -239,6 +266,59 @@ def _generate_presigned_urls() -> dict:
             )
             files[relative] = url
     return files
+
+
+def _get_bundles(assistants: dict) -> dict:
+    """Per-assistant bundle manifests: presigned latest/ files + build version.
+
+    Only enabled generatable assistants with files in latest/ appear. Version
+    comes from the newest build record; absent builds table means no version."""
+    bundles = {}
+    for assistant in GENERATABLE_ASSISTANTS:
+        if not assistants.get(assistant):
+            continue
+        files = _generate_presigned_urls(assistant)
+        if not files:
+            continue
+        bundles[assistant] = {
+            'version': _latest_build_version(assistant),
+            'files': files,
+        }
+    return bundles
+
+
+def _latest_build_version(assistant: str) -> str:
+    table_name = os.environ.get('BUILDS_TABLE')
+    if not table_name:
+        return ''
+    try:
+        resp = dynamodb.Table(table_name).query(
+            KeyConditionExpression=Key('assistant').eq(assistant),
+            ScanIndexForward=False,
+            Limit=1,
+        )
+        items = resp.get('Items', [])
+        return str(items[0]['version']) if items else ''
+    except Exception as e:
+        print(f"Warning: could not read latest build for {assistant}: {e}")
+        return ''
+
+
+def _get_assistants() -> dict:
+    """Per-assistant enforcement toggles from the documents table SETTINGS item.
+
+    Fail-open to defaults (claude-code on) when the env var, table, or item is
+    missing — mirrors config-generator's _generation_enabled."""
+    table_name = os.environ.get('DOCUMENTS_TABLE')
+    if not table_name:
+        return dict(DEFAULT_ASSISTANTS)
+    try:
+        item = dynamodb.Table(table_name).get_item(Key={'id': 'SETTINGS'}).get('Item')
+    except Exception as e:
+        print(f"Warning: could not read SETTINGS ({e}) — returning default assistants")
+        return dict(DEFAULT_ASSISTANTS)
+    stored = (item or {}).get('assistants') or {}
+    return {name: bool(stored.get(name, DEFAULT_ASSISTANTS[name])) for name in KNOWN_ASSISTANTS}
 
 
 # ---------------------------------------------------------------------------

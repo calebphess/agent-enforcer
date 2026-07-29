@@ -1,0 +1,23 @@
+#!/bin/bash
+# Agent Enforcer macOS postinstall: state dirs, autostart, banner
+set -e
+
+mkdir -p /etc/agent-enforcer
+chmod 750 /etc/agent-enforcer
+mkdir -p /var/lib/agent-enforcer
+chmod 755 /var/lib/agent-enforcer
+
+# Load the daemon now and on every boot (agent-enforcer autostart off to opt out)
+launchctl bootstrap system /Library/LaunchDaemons/com.alchemist.agent-enforcer.plist 2>/dev/null || true
+launchctl enable system/com.alchemist.agent-enforcer 2>/dev/null || true
+
+/usr/local/bin/agent-enforcer banner || true
+echo "Agent Enforcer installed."
+echo ""
+echo "Next steps:"
+echo "  sudo agent-enforcer register        # register this machine"
+echo "  agent-enforcer status               # verify configuration"
+echo "  sudo agent-enforcer autostart off   # disable start-on-boot (optional)"
+echo ""
+
+exit 0

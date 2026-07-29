@@ -10,6 +10,9 @@ import { Construct } from 'constructs';
 
 const API_KEY_SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:008971674866:secret:agent-enforcer/dev/api-key-RNsIUc';
 const RPM_BUCKET = 'agent-enforcer-rpm';
+// User-populated via cdk/scripts/push-local-secrets.sh — cursor-agent only
+// accepts a Cursor User API key (Anthropic keys don't work)
+const CURSOR_KEY_SECRET_NAME = 'agent-enforcer/dev/cursor-api-key';
 
 export interface DemoStackProps extends cdk.StackProps {
   // API Gateway base URL from AgentEnforcerStack — agents register and sync through this
@@ -102,7 +105,11 @@ export class DemoStack extends cdk.Stack {
     // which generates presigned URLs (presigned URLs carry their own embedded auth credentials)
     instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
-      resources: [API_KEY_SECRET_ARN],
+      resources: [
+        API_KEY_SECRET_ARN,
+        // Name-based wildcard: the secret is created outside CDK (push-local-secrets.sh)
+        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${CURSOR_KEY_SECRET_NAME}-*`,
+      ],
     }));
     instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['s3:GetObject', 's3:ListBucket'],
@@ -129,12 +136,22 @@ export class DemoStack extends cdk.Stack {
 
     const buildTimestamp = this.node.tryGetContext('buildTimestamp') as string | undefined ?? 'initial';
 
+    // 'auto' (default): instances run the canned spec, upload, self-destruct.
+    // 'interactive': instances stay up with the demo-prompt wrapper installed
+    // for live customer demos (see README "Interactive customer demo").
+    // Flipping the mode replaces both instances (userDataCausesReplacement).
+    const demoMode = (this.node.tryGetContext('demoMode') as string | undefined) ?? 'auto';
+
     const baseSetup = [
       '#!/bin/bash',
       `# Build ID: ${buildTimestamp}`,
       'set -euxo pipefail',
       'exec > >(tee /var/log/demo-setup.log) 2>&1',
       'echo "=== Demo instance starting at $(date) ==="',
+      '',
+      '# 2GB swap — t2.micro has 1GB RAM; coding agents need the headroom',
+      'fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile',
+      "echo '/swapfile none swap sw 0 0' >> /etc/fstab",
       '',
       '# System deps + SSM agent (Rocky Linux does not include it)',
       'dnf install -y curl unzip tar python3 git',
@@ -208,13 +225,87 @@ export class DemoStack extends cdk.Stack {
       `curl -s -X POST "${selfDestructUrl.url}" -H 'Content-Type: application/json' -d "{\\"instance_id\\": \\"$INSTANCE_ID\\"}" || true`,
     ].join('\n');
 
-    // Instance 1: control (no agent enforcer)
+    // Interactive mode tail: no auto-run, no self-destruct — the operator runs
+    // `sudo demo-prompt "<prompt>"` on both boxes via Session Manager instead.
+    // `assistant` marks which coding agent this box demos (claude | cursor).
+    const interactiveTail = (role: 'instance1' | 'instance2', assistant: 'claude' | 'cursor') => [
+      '',
+      '# === INTERACTIVE DEMO MODE — no auto-run, no self-destruct ===',
+      `echo "${role}" > /etc/demo-role`,
+      `echo "${assistant}" > /etc/demo-assistant`,
+      '# ARNs only — no secret material on disk; demo-prompt fetches keys at run time',
+      'cat > /etc/demo-env <<EOF',
+      `RESULTS_BUCKET=${demoResultsBucket.bucketName}`,
+      `API_KEY_SECRET_ARN=${API_KEY_SECRET_ARN}`,
+      `CURSOR_KEY_SECRET_NAME=${CURSOR_KEY_SECRET_NAME}`,
+      'EOF',
+      'chmod 644 /etc/demo-env',
+      `aws s3 cp "s3://${demoResultsBucket.bucketName}/demo-assets/demo-prompt.sh" /usr/local/bin/demo-prompt`,
+      `aws s3 cp "s3://${demoResultsBucket.bucketName}/demo-assets/demo-stream-filter.py" /usr/local/bin/demo-stream-filter.py`,
+      'chmod 755 /usr/local/bin/demo-prompt /usr/local/bin/demo-stream-filter.py',
+      '# Defensive: guarantee the Session Manager user can sudo on Rocky 9',
+      "echo 'ssm-user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/91-demo-ssm-user",
+      'chmod 440 /etc/sudoers.d/91-demo-ssm-user',
+      `echo 'Agent Enforcer demo (${role}, ${assistant}). Run:  sudo demo-prompt "build me a ..."' > /etc/motd`,
+      'echo "=== Interactive demo setup complete at $(date) ==="',
+    ].join('\n');
+
+    // Agent Enforcer install + registration — RPM from the stable installer
+    // key (fallback: newest .rpm anywhere in the bucket), register with the
+    // instance ID as user_id, then sync twice: the first pulls bundles, the
+    // second reports the applied versions back to the fleet console.
+    const enforcedSetup = [
+      `# build: ${buildTimestamp}`,
+      '',
+      '# === AGENT ENFORCER SETUP ===',
+      '',
+      `aws s3 cp "s3://${RPM_BUCKET}/installers/latest/agent-enforcer.rpm" /tmp/agent-enforcer.rpm || {`,
+      `  RPM_FILE=$(aws s3 ls "s3://${RPM_BUCKET}/" --recursive | grep "\\.rpm$" | sort | tail -1 | awk '{print $4}')`,
+      `  aws s3 cp "s3://${RPM_BUCKET}/$RPM_FILE" /tmp/agent-enforcer.rpm`,
+      '}',
+      'rpm -i /tmp/agent-enforcer.rpm',
+      '',
+      '# Register with the license API using instance ID as user_id',
+      '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',
+      `AGENT_ENFORCER_API="${apiEndpoint}agent-enforcer"`,
+      'sudo agent-enforcer register --no-prompt \\',
+      '  --user-id "$INSTANCE_ID" \\',
+      '  --endpoint "$AGENT_ENFORCER_API"',
+      '',
+      '# Sync twice: pull bundles, then report applied versions to the fleet',
+      'sleep 5',
+      'agent-enforcer sync || true',
+      'agent-enforcer sync || true',
+    ].join('\n');
+
+    // Cursor CLI for the cursor demo box — installed as the demo user (the
+    // installer drops it in ~/.local/bin), then linked system-wide
+    const cursorSetup = [
+      '',
+      '# === CURSOR CLI SETUP ===',
+      "su -s /bin/bash demo -c 'curl https://cursor.com/install -fsS | bash' || true",
+      'ln -sf /home/demo/.local/bin/cursor-agent /usr/local/bin/cursor-agent 2>/dev/null || true',
+      'cursor-agent --version || echo "WARNING: cursor-agent install failed"',
+    ].join('\n');
+
+    // Instance 1 — claude-code box. Auto mode: unenforced control for the
+    // side-by-side comparison. Interactive mode: registered + enforced, so the
+    // fleet console shows a real claude-code agent.
     const ud1 = ec2.UserData.forLinux();
-    ud1.addCommands(baseSetup + '\n' + buildAndUpload(1));
+    ud1.addCommands(
+      demoMode === 'interactive'
+        ? baseSetup + '\n' + enforcedSetup + '\n' + interactiveTail('instance1', 'claude')
+        : baseSetup + '\n' + buildAndUpload(1),
+    );
+
+    // Micro sizes are not in the Rocky 9 Marketplace product's supported
+    // instance list (verified via run-instances --dry-run) — t2.small is the
+    // smallest supported type in the t2 class
+    const demoInstanceType = ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.SMALL);
 
     const controlInstance = new ec2.Instance(this, 'ControlInstance', {
       vpc,
-      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+      instanceType: demoInstanceType,
       machineImage: ami,
       securityGroup: sg,
       role: instanceRole,
@@ -226,43 +317,21 @@ export class DemoStack extends cdk.Stack {
       }],
     });
     cdk.Tags.of(controlInstance).add('Project', 'agent-enforcer-demo');
+    cdk.Tags.of(controlInstance).add('Name', 'agent-enforcer-demo-claude');
     controlInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    // Instance 2: enforced (installs RPM, registers license, syncs via API)
-    const enforcedSetup = [
-      `# build: ${buildTimestamp}`,
-      '',
-      '# === AGENT ENFORCER SETUP ===',
-      '',
-      '# Install RPM from agent-enforcer-rpm S3 bucket',
-      `RPM_FILE=$(aws s3 ls "s3://${RPM_BUCKET}/" --recursive | grep "\\.rpm$" | sort | tail -1 | awk '{print $4}')`,
-      `aws s3 cp "s3://${RPM_BUCKET}/$RPM_FILE" /tmp/agent-enforcer.rpm`,
-      'rpm -ivh /tmp/agent-enforcer.rpm',
-      '',
-      '# Register with the license API using instance ID as user_id',
-      '# apiEndpoint is injected by CDK at synthesis time (resolves at CloudFormation deploy)',
-      `AGENT_ENFORCER_API="${apiEndpoint}agent-enforcer"`,
-      'AGENT_VERSION=$(cat /usr/lib/agent-enforcer/version 2>/dev/null || echo "0.2.1")',
-      'sudo agent-enforcer register --no-prompt \\',
-      '  --user-id "$INSTANCE_ID" \\',
-      '  --agent-type "ROCKY9" \\',
-      `  --agent-version "$AGENT_VERSION" \\`,
-      '  --endpoint "$AGENT_ENFORCER_API"',
-      '',
-      '# Wait for initial sync to demo user home (agent syncs /home/*/.claude/)',
-      'for i in $(seq 1 12); do',
-      '  [ -f /home/demo/.claude/CLAUDE.md ] && break',
-      '  echo "Waiting for agent-enforcer sync... ($i/12)"',
-      '  sleep 5',
-      'done',
-    ].join('\n');
-
+    // Instance 2 — enforced in both modes. Auto mode: claude-code under
+    // enforcement for the comparison run. Interactive mode: the cursor box.
     const ud2 = ec2.UserData.forLinux();
-    ud2.addCommands(baseSetup + '\n' + enforcedSetup + '\n' + buildAndUpload(2));
+    ud2.addCommands(
+      demoMode === 'interactive'
+        ? baseSetup + '\n' + cursorSetup + '\n' + enforcedSetup + '\n' + interactiveTail('instance2', 'cursor')
+        : baseSetup + '\n' + enforcedSetup + '\n' + buildAndUpload(2),
+    );
 
     const enforcedInstance = new ec2.Instance(this, 'EnforcedInstance', {
       vpc,
-      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+      instanceType: demoInstanceType,
       machineImage: ami,
       securityGroup: sg,
       role: instanceRole,
@@ -274,11 +343,25 @@ export class DemoStack extends cdk.Stack {
       }],
     });
     cdk.Tags.of(enforcedInstance).add('Project', 'agent-enforcer-demo');
+    cdk.Tags.of(enforcedInstance).add('Name', 'agent-enforcer-demo-cursor');
     enforcedInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     new cdk.CfnOutput(this, 'SelfDestructFunctionUrl', { value: selfDestructUrl.url });
     new cdk.CfnOutput(this, 'ResultsBucketUrl', {
       value: `https://${demoResultsBucket.bucketName}.s3.amazonaws.com/results.md`,
+    });
+    new cdk.CfnOutput(this, 'DemoMode', { value: demoMode });
+    new cdk.CfnOutput(this, 'ControlInstanceId', { value: controlInstance.instanceId });
+    new cdk.CfnOutput(this, 'EnforcedInstanceId', { value: enforcedInstance.instanceId });
+    // Open these two side by side for the interactive customer demo
+    new cdk.CfnOutput(this, 'ControlSessionUrl', {
+      value: `https://${this.region}.console.aws.amazon.com/systems-manager/session-manager/${controlInstance.instanceId}?region=${this.region}`,
+    });
+    new cdk.CfnOutput(this, 'EnforcedSessionUrl', {
+      value: `https://${this.region}.console.aws.amazon.com/systems-manager/session-manager/${enforcedInstance.instanceId}?region=${this.region}`,
+    });
+    new cdk.CfnOutput(this, 'ResultsBucketBaseUrl', {
+      value: `https://${demoResultsBucket.bucketName}.s3.amazonaws.com/`,
     });
   }
 }

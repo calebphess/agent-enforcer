@@ -29,7 +29,7 @@ jobs:
         run: pip install -r tests/lambda/requirements-test.txt
 
       - name: Run lambda tests
-        run: python -m pytest tests/lambda/test_license.py -v
+        run: python -m pytest tests/lambda/ -v
 
   agent-tests:
     name: Agent bash unit tests
@@ -39,6 +39,9 @@ jobs:
 
       - name: Run agent tests
         run: bash tests/agent/test_agent.sh
+
+      - name: Syntax-check demo scripts
+        run: bash -n demo/demo-prompt.sh && python3 -m py_compile demo/demo-stream-filter.py
 
   cdk-synth:
     name: CDK synth validation

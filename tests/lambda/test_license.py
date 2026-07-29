@@ -353,3 +353,162 @@ def test_sync_missing_license_id(aws_resources):
     }, None)
     assert resp['statusCode'] == 400
     assert 'license_id' in json.loads(resp['body'])['error'].lower()
+
+
+# ---------------------------------------------------------------------------
+# Sync — assistants toggles
+# ---------------------------------------------------------------------------
+
+def _create_documents_table():
+    """The shared fixture doesn't create the documents table — tests that need
+    SETTINGS create it inside the fixture's active moto backend."""
+    ddb = boto3.resource('dynamodb', region_name='us-east-1')
+    return ddb.create_table(
+        TableName='AgentEnforcerDocuments',
+        KeySchema=[{'AttributeName': 'id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
+        BillingMode='PAY_PER_REQUEST',
+    )
+
+
+def test_sync_returns_assistants_from_settings(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    table = _create_documents_table()
+    table.put_item(Item={'id': 'SETTINGS', 'assistants': {
+        'claude-code': True, 'kiro': True, 'cursor': False, 'github-copilot': False,
+    }})
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    assert 'files' in body
+    assert body['assistants'] == {
+        'claude-code': True, 'kiro': True, 'cursor': False, 'github-copilot': False,
+    }
+
+
+def test_sync_returns_default_assistants_when_settings_missing(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    _create_documents_table()  # table exists but holds no SETTINGS item
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    assert resp['statusCode'] == 200
+    assert json.loads(resp['body'])['assistants'] == {
+        'claude-code': True, 'kiro': False, 'cursor': False, 'github-copilot': False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sync — v1.0 per-assistant bundles + applied-version reporting
+# ---------------------------------------------------------------------------
+
+def _create_builds_table(seed=()):
+    ddb = boto3.resource('dynamodb', region_name='us-east-1')
+    table = ddb.create_table(
+        TableName='AgentEnforcerBuilds',
+        KeySchema=[
+            {'AttributeName': 'assistant', 'KeyType': 'HASH'},
+            {'AttributeName': 'version', 'KeyType': 'RANGE'},
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'assistant', 'AttributeType': 'S'},
+            {'AttributeName': 'version', 'AttributeType': 'S'},
+        ],
+        BillingMode='PAY_PER_REQUEST',
+    )
+    for item in seed:
+        table.put_item(Item=item)
+    return table
+
+
+def _sync_event_with(license_id, machine_id='abc123', **extra):
+    body = {'license_id': license_id, 'machine_id': machine_id}
+    body.update(extra)
+    return {'routeKey': 'POST /agent-enforcer/sync', 'body': json.dumps(body)}
+
+
+def test_sync_returns_bundles_with_versions(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    table = _create_documents_table()
+    table.put_item(Item={'id': 'SETTINGS', 'assistants': {'claude-code': True, 'cursor': True}})
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+    _create_builds_table(seed=[
+        {'assistant': 'claude-code', 'version': '1753751000000', 'zip_key': 'zips/claude-code.1753751000000.zip'},
+        {'assistant': 'claude-code', 'version': '1753664600000', 'zip_key': 'zips/claude-code.1753664600000.zip'},
+        {'assistant': 'cursor', 'version': '1753751000000', 'zip_key': 'zips/cursor.1753751000000.zip'},
+    ])
+    monkeypatch.setenv('BUILDS_TABLE', 'AgentEnforcerBuilds')
+    s3.put_object(Bucket=DIST_BUCKET, Key='cursor/latest/AGENTS.md', Body=b'<!-- managed -->')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    bundles = body['bundles']
+    assert set(bundles) == {'claude-code', 'cursor'}
+    assert bundles['claude-code']['version'] == '1753751000000'  # newest, not oldest
+    assert set(bundles['claude-code']['files']) == {'CLAUDE.md', 'settings.json'}
+    assert bundles['cursor']['version'] == '1753751000000'
+    assert set(bundles['cursor']['files']) == {'AGENTS.md'}
+    for bundle in bundles.values():
+        for url in bundle['files'].values():
+            assert url.startswith('https://')
+
+
+def test_sync_excludes_disabled_assistants_from_bundles(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    table = _create_documents_table()
+    table.put_item(Item={'id': 'SETTINGS', 'assistants': {'claude-code': True, 'cursor': False}})
+    monkeypatch.setenv('DOCUMENTS_TABLE', 'AgentEnforcerDocuments')
+    # Cursor files exist in the bucket but the toggle is off — must not be served
+    s3.put_object(Bucket=DIST_BUCKET, Key='cursor/latest/AGENTS.md', Body=b'<!-- managed -->')
+
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    body = json.loads(resp['body'])
+    assert 'cursor' not in body['bundles']
+    assert 'claude-code' in body['bundles']
+
+
+def test_sync_keeps_legacy_files_key_for_claude_code(aws_resources):
+    """Pre-1.0 agents read only `files` — it must stay populated."""
+    m = aws_resources['module']
+    r = m.handler(_register_event(), None)
+    license_id = json.loads(r['body'])['license_id']
+    resp = m.handler(_sync_event(license_id), None)
+
+    body = json.loads(resp['body'])
+    assert set(body['files']) == {'CLAUDE.md', 'settings.json'}
+    assert all(url.startswith('https://') for url in body['files'].values())
+
+
+def test_sync_persists_applied_versions_on_license(aws_resources):
+    m = aws_resources['module']
+    table = aws_resources['table']
+    r = m.handler(_register_event(agent_version='0.4.0'), None)
+    license_id = json.loads(r['body'])['license_id']
+
+    resp = m.handler(_sync_event_with(
+        license_id,
+        applied_versions={'claude-code': '1753751000000', 'cursor': '1753751000000'},
+        agent_version='1.0.0',
+    ), None)
+
+    assert resp['statusCode'] == 200
+    item = table.get_item(Key={'license_id': license_id})['Item']
+    assert item['applied_versions'] == {'claude-code': '1753751000000', 'cursor': '1753751000000'}
+    assert item['agent_version'] == '1.0.0'  # refreshed from the sync report
