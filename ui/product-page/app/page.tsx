@@ -7,6 +7,7 @@ import { HowItWorks } from '@/components/sections/how-it-works'
 import { AirGap } from '@/components/sections/airgap'
 import { Proposal } from '@/components/sections/proposal'
 import { Pricing } from '@/components/sections/pricing'
+import { Downloads } from '@/components/sections/downloads'
 import { CtaFooter } from '@/components/sections/cta-footer'
 
 export default function Page() {
@@ -21,6 +22,7 @@ export default function Page() {
       <AirGap />
       <Proposal />
       <Pricing />
+      <Downloads />
       <CtaFooter />
     </main>
   )

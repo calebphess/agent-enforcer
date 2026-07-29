@@ -1,29 +1,33 @@
 """
 Config Generator Lambda
 
-Triggered by any S3 PUT on the enforcement-source bucket.
-Reads ALL .md enforcement documents from that bucket, combines them into
-a single context, then calls Bedrock to generate a unified .claude/
-configuration bundle:
+Triggered by any S3 PUT or delete on the enforcement-source bucket.
+Reads ALL enforcement documents (.md and .pdf) from that bucket, combines
+them into a single context, then calls Bedrock to generate a configuration
+bundle per enabled assistant:
 
-  CLAUDE.md                        — combined mandatory rules (imperative)
-  settings.json                    — Claude Code settings
-  skills/<name>.md                 — reusable behaviors inferred from the docs
-  commands/<name>.md               — slash commands for audit/check workflows
+  claude-code/  CLAUDE.md, settings.json, skills/*.md, commands/*.md
+  cursor/       AGENTS.md (single lean rules file — cursor has no lazy loading)
 
-Writes the result to enforcement-dist/claude-code/<date>/ AND
-enforcement-dist/claude-code/latest/ (always overwritten).
+Each generation run is stamped with an epoch-millisecond version. Bundles are
+written to <assistant>/<version>/ AND <assistant>/latest/ (always overwritten),
+zipped to zips/<assistant>.<version>.zip, and recorded in the builds table
+(PK assistant, SK version) with the source docs + ETags that went in.
 
-Naming convention for source documents:
-  enforcement-doc-core.md          — base org-wide rules (always present)
-  enforcement-doc-security.md      — security-specific additions
-  enforcement-doc-hipaa.md         — HIPAA compliance additions
-  enforcement-doc-coding.md        — language/style additions
-  (any *.md file is processed)
+PDFs are distilled before synthesis: pypdf text extraction, chunked map-reduce
+through a fast model that keeps ONLY software-development-relevant rules, with
+the distilled text cached in the dist bucket keyed by source ETag.
+
+Deleting the last source document clears every assistant's latest/ prefix so
+no stale bundle lives on.
 """
+import io
 import json
 import os
+import time
 import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus
 
@@ -36,10 +40,26 @@ dynamodb = boto3.resource('dynamodb')
 
 DIST_BUCKET = os.environ['DIST_BUCKET']
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
+BEDROCK_HAIKU_MODEL_ID = os.environ.get('BEDROCK_HAIKU_MODEL_ID', BEDROCK_MODEL_ID)
+
+# Assistants with a working generation pipeline. The admin UI knows more
+# (kiro, github-copilot) but those toggles gate nothing until a pipeline lands.
+GENERATABLE_ASSISTANTS = ('claude-code', 'cursor')
+DEFAULT_ASSISTANTS = {'claude-code': True, 'cursor': False}
+
+SOURCE_EXTENSIONS = ('.md', '.pdf')
 
 # A UI-managed upload writes its registry record moments before the S3 event
 # lands — don't double-bump a record that fresh.
 REGISTRY_GRACE_SECONDS = 120
+
+# PDF distillation
+DISTILL_CHUNK_CHARS = 40_000
+DISTILL_MAX_WORKERS = 4
+DISTILL_MAX_TOKENS = 2048
+NOTHING_RELEVANT = 'NOTHING_RELEVANT'
+
+BEDROCK_RETRIES = 5
 
 SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into efficient Claude Code configuration bundles.
 
@@ -111,9 +131,54 @@ Return a single JSON object. No markdown fencing, no prose outside the JSON.
 - settings.json must be a JSON object (not a string).
 - Skills are self-contained — a developer can read them without seeing CLAUDE.md."""
 
+CURSOR_SYSTEM_PROMPT = """You are an expert at converting enterprise AI governance documents into a Cursor rules file.
+
+## How Cursor loads rules — read this carefully
+
+Cursor reads a single AGENTS.md file at the workspace root. Unlike Claude Code
+there is NO lazy loading: every word of AGENTS.md is in context for every
+request. Terseness is mandatory — the whole file must stay under 500 words.
+
+## Rules for the output
+
+- Imperative, terse, deduplicated rules. No prose, no rationale, no headers
+  beyond simple section labels.
+- Merge overlapping rules across documents; keep only what changes how code is
+  written, reviewed, or secured.
+- The FIRST LINE of AGENTS.md must be exactly:
+  <!-- managed by agent-enforcer -->
+
+## Output format
+
+Return a single JSON object. No markdown fencing, no prose outside the JSON.
+
+{
+  "files": {
+    "AGENTS.md": "<the complete rules file, first line the managed marker, under 500 words>"
+  },
+  "version": "<YYYY-MM-DD>"
+}"""
+
+DISTILL_SYSTEM_PROMPT = """You extract software-development rules from compliance and governance documents.
+
+From the document excerpt provided, extract ONLY rules that are directly
+relevant to writing, reviewing, testing, or securing software code — coding
+standards, secure development practices, input validation, cryptography usage,
+error handling, dependency and supply-chain requirements, developer testing,
+CI/CD and configuration management requirements.
+
+IGNORE everything else: physical security, personnel, facilities, incident
+response process, awareness training, audit logistics, policy administration.
+
+Output terse markdown bullets, one rule per line, no headers, no commentary.
+If the excerpt contains nothing relevant to software development, output
+exactly: NOTHING_RELEVANT"""
+
+CURSOR_MANAGED_MARKER = '<!-- managed by agent-enforcer -->'
+
 
 def handler(event, context):
-    """Process a source bucket event by regenerating the full .claude/ bundle."""
+    """Process a source bucket event by regenerating bundles for every enabled assistant."""
     # All records in the event share the same source bucket
     source_bucket = event['Records'][0]['s3']['bucket']['name']
     trigger_key = unquote_plus(event['Records'][0]['s3']['object']['key'])
@@ -122,27 +187,39 @@ def handler(event, context):
     # Registry bookkeeping happens regardless of generation toggles
     _register_documents(event)
 
-    if not _generation_enabled('claude-code'):
-        print("claude-code generation disabled via SETTINGS — skipping")
+    enabled = [a for a in GENERATABLE_ASSISTANTS if _generation_enabled(a)]
+    if not enabled:
+        print("No generatable assistant is enabled via SETTINGS — skipping")
         return
 
-    docs = _read_all_docs(source_bucket)
+    docs, doc_meta = _read_all_docs(source_bucket)
     if not docs:
-        print("No .md files found in source bucket — nothing to generate")
+        print("No source documents remain — clearing all latest bundles")
+        _clear_all_bundles()
         return
 
     print(f"Processing {len(docs)} enforcement document(s): {list(docs.keys())}")
 
-    bundle = _call_bedrock(docs)
-    version = bundle.get('version', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
-    files = bundle.get('files', {})
+    version = str(int(time.time() * 1000))
 
-    if not files:
-        print("Bedrock returned empty files bundle — check the prompt output")
-        return
+    for assistant in enabled:
+        if assistant == 'claude-code':
+            bundle = _call_bedrock(docs)
+        else:
+            bundle = _call_bedrock(docs, system_prompt=CURSOR_SYSTEM_PROMPT)
 
-    _write_bundle(files, version)
-    print(f"Bundle written: {len(files)} files at version {version}")
+        files = bundle.get('files', {})
+        if not files:
+            print(f"Bedrock returned empty files bundle for {assistant} — skipping")
+            continue
+
+        if assistant == 'cursor':
+            files = _ensure_cursor_marker(files)
+
+        _write_bundle(assistant, files, version)
+        zip_key = _write_zip(assistant, files, version)
+        _record_build(assistant, version, doc_meta, sorted(files.keys()), zip_key)
+        print(f"{assistant} bundle written: {len(files)} files at version {version}")
 
 
 # ---------------------------------------------------------------------------
@@ -150,22 +227,21 @@ def handler(event, context):
 # ---------------------------------------------------------------------------
 
 def _generation_enabled(assistant: str) -> bool:
-    """Fail-open: with no table configured, no SETTINGS item, or any read
-    error, generation proceeds — the direct `aws s3 cp` flow must keep working.
-
-    Only claude-code gating is functional today; kiro/cursor/github-copilot
-    toggles persist in SETTINGS but have no generation pipeline yet."""
+    """Fail-open per assistant default: with no table configured, no SETTINGS
+    item, or any read error, each assistant falls back to its default
+    (claude-code on, cursor off) — the direct `aws s3 cp` flow keeps working."""
+    default = DEFAULT_ASSISTANTS.get(assistant, False)
     table_name = os.environ.get('DOCUMENTS_TABLE')
     if not table_name:
-        return True
+        return default
     try:
         item = dynamodb.Table(table_name).get_item(Key={'id': 'SETTINGS'}).get('Item')
     except Exception as e:
-        print(f"  Warning: could not read SETTINGS ({e}) — generation proceeds")
-        return True
+        print(f"  Warning: could not read SETTINGS ({e}) — using defaults")
+        return default
     if not item:
-        return True
-    return bool((item.get('assistants') or {}).get(assistant, True))
+        return default
+    return bool((item.get('assistants') or {}).get(assistant, default))
 
 
 def _register_documents(event) -> None:
@@ -181,7 +257,7 @@ def _register_documents(event) -> None:
         if not record.get('eventName', '').startswith('ObjectCreated'):
             continue  # removals regenerate the bundle but never touch the registry
         key = unquote_plus(record['s3']['object']['key'])
-        if not key.lower().endswith('.md'):
+        if not key.lower().endswith(SOURCE_EXTENSIONS):
             continue
         try:
             _upsert_document_record(table, key)
@@ -238,25 +314,128 @@ def _upsert_document_record(table, key: str) -> None:
     print(f"  Refreshed document record for re-uploaded {key}")
 
 
-def _read_all_docs(bucket: str) -> dict:
-    """List and read every .md file from the source bucket."""
+# ---------------------------------------------------------------------------
+# Source reading + PDF distillation
+# ---------------------------------------------------------------------------
+
+def _read_all_docs(bucket: str):
+    """List and read every .md/.pdf file from the source bucket.
+
+    Returns (docs, meta): docs maps key -> text ready for synthesis (PDFs are
+    distilled first), meta lists {key, etag} for the build record."""
     docs = {}
+    meta = []
     paginator = s3.get_paginator('list_objects_v2')
     for page in paginator.paginate(Bucket=bucket):
         for obj in page.get('Contents', []):
             key = obj['Key']
-            if not key.lower().endswith('.md'):
+            if not key.lower().endswith(SOURCE_EXTENSIONS):
                 continue
+            etag = obj.get('ETag', '').strip('"')
             try:
-                resp = s3.get_object(Bucket=bucket, Key=key)
-                docs[key] = resp['Body'].read().decode('utf-8')
+                if key.lower().endswith('.pdf'):
+                    docs[key] = _distilled_pdf_text(bucket, key, etag)
+                else:
+                    resp = s3.get_object(Bucket=bucket, Key=key)
+                    docs[key] = resp['Body'].read().decode('utf-8')
+                meta.append({'key': key, 'etag': etag})
                 print(f"  Read {key} ({obj['Size']} bytes)")
             except ClientError as e:
                 print(f"  Warning: could not read {key}: {e}")
-    return docs
+    return docs, meta
 
 
-def _call_bedrock(docs: dict) -> dict:
+def _distilled_pdf_text(bucket: str, key: str, etag: str) -> str:
+    """Distill a PDF to software-development-relevant rules, cached by ETag."""
+    cache_key = f'distilled/{key}.{etag}.md'
+    try:
+        cached = s3.get_object(Bucket=DIST_BUCKET, Key=cache_key)
+        print(f"  Using cached distillation for {key}")
+        return cached['Body'].read().decode('utf-8')
+    except ClientError:
+        pass
+
+    data = s3.get_object(Bucket=bucket, Key=key)['Body'].read()
+    text = _extract_pdf_text(data)
+    print(f"  Extracted {len(text)} chars of text from {key}")
+    distilled = _distill_text(text, key)
+    s3.put_object(
+        Bucket=DIST_BUCKET, Key=cache_key,
+        Body=distilled.encode('utf-8'), ContentType='text/markdown',
+    )
+    print(f"  Distilled {key} to {len(distilled)} chars (cached at {cache_key})")
+    return distilled
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    from pypdf import PdfReader  # imported lazily — only needed when PDFs exist
+    reader = PdfReader(io.BytesIO(data))
+    return '\n'.join(page.extract_text() or '' for page in reader.pages)
+
+
+def _distill_text(text: str, name: str) -> str:
+    """Map-reduce: chunk the raw text, keep only software-development rules."""
+    chunks = [text[i:i + DISTILL_CHUNK_CHARS] for i in range(0, len(text), DISTILL_CHUNK_CHARS)]
+    total = len(chunks)
+    print(f"  Distilling {name}: {total} chunk(s)")
+
+    with ThreadPoolExecutor(max_workers=DISTILL_MAX_WORKERS) as pool:
+        results = list(pool.map(
+            lambda pair: _distill_chunk(pair[1], name, pair[0], total),
+            enumerate(chunks, start=1),
+        ))
+
+    kept = [r for r in results if r and NOTHING_RELEVANT not in r]
+    return '\n'.join(kept)
+
+
+def _distill_chunk(chunk: str, name: str, index: int, total: int) -> str:
+    user_message = (
+        f"Document: {name} (part {index} of {total})\n\n"
+        f"<excerpt>\n{chunk}\n</excerpt>"
+    )
+    return _invoke_model(
+        BEDROCK_HAIKU_MODEL_ID, DISTILL_SYSTEM_PROMPT, user_message,
+        max_tokens=DISTILL_MAX_TOKENS,
+    ).strip()
+
+
+# ---------------------------------------------------------------------------
+# Bedrock synthesis
+# ---------------------------------------------------------------------------
+
+def _invoke_model(model_id: str, system: str, user_message: str, max_tokens: int = 8192) -> str:
+    """Invoke a Bedrock model with retry/backoff on throttling; returns raw text."""
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user_message}],
+    })
+
+    last_error = None
+    for attempt in range(BEDROCK_RETRIES):
+        try:
+            response = bedrock.invoke_model(
+                modelId=model_id,
+                body=body,
+                contentType='application/json',
+                accept='application/json',
+            )
+            result = json.loads(response['body'].read())
+            return result['content'][0]['text']
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            if code not in ('ThrottlingException', 'ModelTimeoutException', 'ServiceUnavailableException'):
+                raise
+            last_error = e
+            wait = 2 ** attempt
+            print(f"  Bedrock {code} (attempt {attempt + 1}/{BEDROCK_RETRIES}) — retrying in {wait}s")
+            time.sleep(wait)
+    raise last_error
+
+
+def _call_bedrock(docs: dict, system_prompt: str = SYSTEM_PROMPT) -> dict:
     """Send all enforcement docs to Bedrock and return the parsed bundle."""
     doc_sections = '\n\n'.join(
         f'<document name="{name}">\n{content}\n</document>'
@@ -264,26 +443,11 @@ def _call_bedrock(docs: dict) -> dict:
     )
 
     user_message = (
-        f"Generate a Claude Code .claude/ configuration bundle from these "
+        f"Generate the configuration bundle from these "
         f"{len(docs)} enforcement document(s):\n\n{doc_sections}"
     )
 
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 8192,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_message}],
-    })
-
-    response = bedrock.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
-        body=body,
-        contentType='application/json',
-        accept='application/json',
-    )
-
-    result = json.loads(response['body'].read())
-    raw_text = result['content'][0]['text'].strip()
+    raw_text = _invoke_model(BEDROCK_MODEL_ID, system_prompt, user_message).strip()
 
     # Strip accidental markdown fencing
     if raw_text.startswith('```'):
@@ -294,31 +458,51 @@ def _call_bedrock(docs: dict) -> dict:
     return json.loads(raw_text)
 
 
-def _clear_latest(bucket: str) -> None:
-    """Delete all existing objects under claude-code/latest/ before writing a new bundle."""
+def _ensure_cursor_marker(files: dict) -> dict:
+    """Guarantee the managed marker leads AGENTS.md regardless of model output."""
+    content = files.get('AGENTS.md')
+    if isinstance(content, str) and not content.startswith(CURSOR_MANAGED_MARKER):
+        files = dict(files)
+        files['AGENTS.md'] = f'{CURSOR_MANAGED_MARKER}\n{content}'
+    return files
+
+
+# ---------------------------------------------------------------------------
+# Bundle output: versioned + latest prefixes, zips, build records
+# ---------------------------------------------------------------------------
+
+def _clear_latest(bucket: str, assistant: str) -> None:
+    """Delete all existing objects under <assistant>/latest/ before writing a new bundle."""
     paginator = s3.get_paginator('list_objects_v2')
     to_delete = []
-    for page in paginator.paginate(Bucket=bucket, Prefix='claude-code/latest/'):
+    for page in paginator.paginate(Bucket=bucket, Prefix=f'{assistant}/latest/'):
         for obj in page.get('Contents', []):
             to_delete.append({'Key': obj['Key']})
     if to_delete:
         s3.delete_objects(Bucket=bucket, Delete={'Objects': to_delete})
-        print(f"  Cleared {len(to_delete)} stale object(s) from claude-code/latest/")
+        print(f"  Cleared {len(to_delete)} stale object(s) from {assistant}/latest/")
 
 
-def _write_bundle(files: dict, version: str) -> None:
+def _clear_all_bundles() -> None:
+    """Last source doc deleted: clear every assistant's latest/ so nothing stale is served."""
+    for assistant in GENERATABLE_ASSISTANTS:
+        _clear_latest(DIST_BUCKET, assistant)
+
+
+def _serialize_bundle_file(file_path: str, file_content) -> tuple:
+    if isinstance(file_content, dict):
+        return json.dumps(file_content, indent=2).encode('utf-8'), 'application/json'
+    content_type = 'application/json' if file_path.endswith('.json') else 'text/plain'
+    return str(file_content).encode('utf-8'), content_type
+
+
+def _write_bundle(assistant: str, files: dict, version: str) -> None:
     """Clear latest/, then write each generated file to both versioned and latest paths."""
-    _clear_latest(DIST_BUCKET)
+    _clear_latest(DIST_BUCKET, assistant)
 
     for file_path, file_content in files.items():
-        if isinstance(file_content, dict):
-            content_bytes = json.dumps(file_content, indent=2).encode('utf-8')
-            content_type = 'application/json'
-        else:
-            content_bytes = str(file_content).encode('utf-8')
-            content_type = 'application/json' if file_path.endswith('.json') else 'text/plain'
-
-        for prefix in [f'claude-code/{version}/', 'claude-code/latest/']:
+        content_bytes, content_type = _serialize_bundle_file(file_path, file_content)
+        for prefix in [f'{assistant}/{version}/', f'{assistant}/latest/']:
             dest = f'{prefix}{file_path}'
             s3.put_object(
                 Bucket=DIST_BUCKET,
@@ -327,3 +511,37 @@ def _write_bundle(files: dict, version: str) -> None:
                 ContentType=content_type,
             )
             print(f"  Wrote s3://{DIST_BUCKET}/{dest}")
+
+
+def _write_zip(assistant: str, files: dict, version: str) -> str:
+    """Zip the bundle in-memory and store it as an immutable versioned artifact."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for file_path, file_content in sorted(files.items()):
+            content_bytes, _ = _serialize_bundle_file(file_path, file_content)
+            zf.writestr(file_path, content_bytes)
+    zip_key = f'zips/{assistant}.{version}.zip'
+    s3.put_object(
+        Bucket=DIST_BUCKET, Key=zip_key,
+        Body=buffer.getvalue(), ContentType='application/zip',
+    )
+    print(f"  Wrote s3://{DIST_BUCKET}/{zip_key}")
+    return zip_key
+
+
+def _record_build(assistant: str, version: str, doc_meta: list, file_list: list, zip_key: str) -> None:
+    """Record what went into this build. Absent table (or errors) never block generation."""
+    table_name = os.environ.get('BUILDS_TABLE')
+    if not table_name:
+        return
+    try:
+        dynamodb.Table(table_name).put_item(Item={
+            'assistant': assistant,
+            'version': version,
+            'built_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'docs': doc_meta,
+            'files': file_list,
+            'zip_key': zip_key,
+        })
+    except Exception as e:
+        print(f"  Warning: could not record build {assistant}@{version}: {e}")

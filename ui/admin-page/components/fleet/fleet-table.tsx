@@ -26,6 +26,7 @@ const PRIMARY_MIN_WIDTH = 260
 const RESPONSIVE_COLUMNS = [
   { key: 'status', minWidth: 160 },
   { key: 'agent_type', minWidth: 180 },
+  { key: 'applied', minWidth: 200 },
   { key: 'agent_version', minWidth: 150 },
   { key: 'created_date', minWidth: 190 },
 ]
@@ -87,6 +88,34 @@ export function FleetTable({
             v{row.original.agent_version}
           </span>
         ),
+      },
+      {
+        id: 'applied',
+        header: 'Enforced config',
+        size: 180,
+        enableColumnFilter: false,
+        enableSorting: false,
+        accessorFn: (row) => Object.keys(row.applied_versions ?? {}).join(','),
+        Cell: ({ row }) => {
+          const applied = row.original.applied_versions ?? {}
+          const entries = Object.entries(applied)
+          if (entries.length === 0) {
+            return <span className="text-xs text-muted-foreground">not reported</span>
+          }
+          return (
+            <span className="flex flex-wrap gap-1.5">
+              {entries.map(([name, version]) => (
+                <span
+                  key={name}
+                  title={`${name} bundle version ${version || 'unknown'}`}
+                  className="rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink"
+                >
+                  {name}
+                </span>
+              ))}
+            </span>
+          )
+        },
       },
       {
         accessorKey: 'created_date',

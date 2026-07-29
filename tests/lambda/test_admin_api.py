@@ -611,3 +611,170 @@ def test_new_admin_routes_require_token(aws_resources):
     for route, params in routes:
         resp = m.handler(_event(route, path_params=params), None)
         assert resp['statusCode'] == 401, route
+
+
+# ---------------------------------------------------------------------------
+# v1.0: PDF documents, build status, downloads, applied versions
+# ---------------------------------------------------------------------------
+
+BUILDS_TABLE = 'AgentEnforcerBuilds'
+INSTALLER_BUCKET = 'agent-enforcer-rpm-test'
+
+
+def _create_builds_table(seed=()):
+    ddb = boto3.resource('dynamodb', region_name='us-east-1')
+    table = ddb.create_table(
+        TableName=BUILDS_TABLE,
+        KeySchema=[
+            {'AttributeName': 'assistant', 'KeyType': 'HASH'},
+            {'AttributeName': 'version', 'KeyType': 'RANGE'},
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'assistant', 'AttributeType': 'S'},
+            {'AttributeName': 'version', 'AttributeType': 'S'},
+        ],
+        BillingMode='PAY_PER_REQUEST',
+    )
+    for item in seed:
+        table.put_item(Item=item)
+    return table
+
+
+def test_create_document_accepts_pdf(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('POST /admin/documents', {
+        'name': 'NIST controls', 'description': 'gov compliance',
+        'filename': 'NIST.SP.800-53r5.pdf',
+    }, token=token), None)
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    assert body['document']['filename'] == 'NIST.SP.800-53r5.pdf'
+    assert body['upload_url'].startswith('https://')
+
+
+def test_create_document_rejects_unsupported_extension(aws_resources):
+    m = aws_resources['module']
+    token = _login(m)
+    resp = m.handler(_event('POST /admin/documents', {
+        'name': 'bad', 'description': '', 'filename': 'rules.docx',
+    }, token=token), None)
+    assert resp['statusCode'] == 400
+    assert '.md or .pdf' in json.loads(resp['body'])['error']
+
+
+def test_build_status_reports_current_stale_and_missing(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    token = _login(m)
+
+    # Three tracked docs in the source bucket
+    for key, body in [('core.md', b'# core v2'), ('sec.md', b'# sec'), ('new.md', b'# new')]:
+        s3.put_object(Bucket=SOURCE_BUCKET, Key=key, Body=body)
+        _create_document(m, token, name=key.split('.')[0], filename=key)
+    stale_etag = 'not-the-current-etag'
+    sec_etag = s3.head_object(Bucket=SOURCE_BUCKET, Key='sec.md')['ETag'].strip('"')
+
+    _create_builds_table(seed=[{
+        'assistant': 'claude-code', 'version': '1753751000000',
+        'built_at': '2026-07-28T22:00:00Z',
+        'docs': [
+            {'key': 'core.md', 'etag': stale_etag},   # changed since build
+            {'key': 'sec.md', 'etag': sec_etag},       # current
+        ],
+        'files': ['CLAUDE.md'], 'zip_key': 'zips/claude-code.1753751000000.zip',
+    }])
+    monkeypatch.setenv('BUILDS_TABLE', BUILDS_TABLE)
+
+    resp = m.handler(_event('GET /admin/build-status', token=token), None)
+    assert resp['statusCode'] == 200
+    body = json.loads(resp['body'])
+    assert body['builds']['claude-code']['version'] == '1753751000000'
+    assert body['builds']['cursor'] is None
+    by_file = {d['filename']: d['status'] for d in body['documents']}
+    assert by_file['core.md']['claude-code'] == 'stale'
+    assert by_file['sec.md']['claude-code'] == 'current'
+    assert by_file['new.md']['claude-code'] == 'missing'
+    assert all(s['cursor'] == 'missing' for s in by_file.values())
+
+
+def test_downloads_installers_lists_latest_and_versions(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    s3 = aws_resources['s3']
+    token = _login(m)
+    s3.create_bucket(Bucket=INSTALLER_BUCKET)
+    for key in [
+        'installers/latest/agent-enforcer.rpm',
+        'installers/latest/agent-enforcer.pkg',
+        'installers/1.0.0/agent-enforcer-1.0.0-1.el9.noarch.rpm',
+        'installers/1.0.0/agent-enforcer-1.0.0.pkg',
+        'installers/0.4.0/agent-enforcer-0.4.0-1.el9.noarch.rpm',
+        'build-logs/should-be-ignored.log',
+        'agent-enforcer-legacy.rpm',  # legacy flat key — not under installers/
+    ]:
+        s3.put_object(Bucket=INSTALLER_BUCKET, Key=key, Body=b'binary')
+    monkeypatch.setenv('INSTALLER_BUCKET', INSTALLER_BUCKET)
+
+    resp = m.handler(_event('GET /admin/downloads/installers', token=token), None)
+    assert resp['statusCode'] == 200
+    installers = json.loads(resp['body'])['installers']
+    assert len(installers) == 5  # log + legacy flat key excluded
+    latest = [i for i in installers if i['latest']]
+    assert {i['platform'] for i in latest} == {'linux', 'macos'}
+    # Latest entries sort before versioned history
+    assert installers[0]['latest'] and installers[1]['latest']
+    assert all(i['url'].startswith(f'https://{INSTALLER_BUCKET}.s3.amazonaws.com/') for i in installers)
+
+
+def test_downloads_bundles_presigns_zips_newest_first(aws_resources, monkeypatch):
+    m = aws_resources['module']
+    token = _login(m)
+    _create_builds_table(seed=[
+        {'assistant': 'claude-code', 'version': '1753664600000',
+         'built_at': '2026-07-27T22:00:00Z', 'zip_key': 'zips/claude-code.1753664600000.zip'},
+        {'assistant': 'claude-code', 'version': '1753751000000',
+         'built_at': '2026-07-28T22:00:00Z', 'zip_key': 'zips/claude-code.1753751000000.zip'},
+        {'assistant': 'cursor', 'version': '1753751000000',
+         'built_at': '2026-07-28T22:00:00Z', 'zip_key': 'zips/cursor.1753751000000.zip'},
+    ])
+    monkeypatch.setenv('BUILDS_TABLE', BUILDS_TABLE)
+
+    resp = m.handler(_event('GET /admin/downloads/bundles', token=token), None)
+    assert resp['statusCode'] == 200
+    bundles = json.loads(resp['body'])['bundles']
+    assert len(bundles) == 3
+    versions = [b['version'] for b in bundles]
+    assert versions == sorted(versions, reverse=True)
+    newest_cc = next(b for b in bundles if b['assistant'] == 'claude-code' and b['latest'])
+    assert newest_cc['version'] == '1753751000000'
+    assert newest_cc['filename'] == 'claude-code.1753751000000.zip'
+    assert newest_cc['zip_url'].startswith('https://')
+    oldest_cc = next(b for b in bundles if b['version'] == '1753664600000')
+    assert oldest_cc['latest'] is False
+
+
+def test_agents_include_applied_versions(aws_resources):
+    m = aws_resources['module']
+    license_table = aws_resources['license_table']
+    token = _login(m)
+    license_table.put_item(Item={
+        'license_id': 'lic-1', 'id': 1, 'user_id': 'i-abc123',
+        'agent_type': 'ROCKY9', 'agent_version': '1.0.0',
+        'machine_id': 'm-1', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-29T00:00:00Z', 'active': True,
+        'applied_versions': {'claude-code': '1753751000000', 'cursor': '1753751000000'},
+    })
+    license_table.put_item(Item={
+        'license_id': 'lic-2', 'id': 2, 'user_id': 'i-def456',
+        'agent_type': 'ROCKY9', 'agent_version': '0.4.0',
+        'machine_id': 'm-2', 'created_date': '2026-07-01T00:00:00Z',
+        'last_used_date': '2026-07-28T00:00:00Z', 'active': True,
+    })
+
+    resp = m.handler(_event('GET /admin/agents', token=token), None)
+    assert resp['statusCode'] == 200
+    agents = {a['user_id']: a for a in json.loads(resp['body'])['agents']}
+    assert agents['i-abc123']['applied_versions'] == {
+        'claude-code': '1753751000000', 'cursor': '1753751000000',
+    }
+    assert agents['i-def456']['applied_versions'] == {}  # pre-1.0 agent — never reported

@@ -330,6 +330,152 @@ assert_contains "assistants has claude-code enabled" "claude-code=enabled" "$ASS
 assert_contains "assistants has kiro disabled" "kiro=disabled" "$ASSISTANTS"
 assert_contains "assistants has github-copilot enabled" "github-copilot=enabled" "$ASSISTANTS"
 
+# -------------------------------------------------------------------
+echo "Test 14: sync parses bundles schema and stages per assistant"
+FAKE_HOMES="${TMPDIR_TEST}/homes"
+rm -rf "$FAKE_HOMES"
+mkdir -p "${FAKE_HOMES}/demo"
+cat > "${FAKE_VAR}/license" <<EOF
+LICENSE_ID=abc-123-def-456
+USER_ID=bundles-test@example.com
+MACHINE_ID=testmachineid12345678901234
+ENDPOINT=https://test.example.com/agent-enforcer
+REGISTERED_AT=2026-07-20T00:00:00Z
+EOF
+install_mock_curl 200 '{"files":{},"assistants":{"claude-code":true,"cursor":true},"bundles":{"claude-code":{"version":"1753751000000","files":{"CLAUDE.md":"https://mock/cc","settings.json":"https://mock/settings"}},"cursor":{"version":"1753751000000","files":{"AGENTS.md":"https://mock/agents"}}}}'
+rm -f "${FAKE_VAR}/applied-versions"
+rm -rf "${FAKE_VAR}/bundles"
+
+AGENT_ENFORCER_HOME_ROOT="$FAKE_HOMES" PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+assert_file_exists "claude-code bundle staged to store" "${FAKE_VAR}/bundles/claude-code/CLAUDE.md"
+assert_file_exists "cursor bundle staged to store" "${FAKE_VAR}/bundles/cursor/AGENTS.md"
+assert_file_exists "claude-code applied to user home" "${FAKE_HOMES}/demo/.claude/CLAUDE.md"
+assert_file_exists "cursor AGENTS.md applied to home root" "${FAKE_HOMES}/demo/AGENTS.md"
+
+echo "Test 14b: sync writes applied-versions state"
+assert_file_exists "applied-versions state written" "${FAKE_VAR}/applied-versions"
+APPLIED=$(cat "${FAKE_VAR}/applied-versions" 2>/dev/null || echo "")
+assert_contains "applied-versions has claude-code version" "claude-code=1753751000000" "$APPLIED"
+assert_contains "applied-versions has cursor version" "cursor=1753751000000" "$APPLIED"
+
+# -------------------------------------------------------------------
+echo "Test 15: sync applies cursor AGENTS.md into git projects"
+mkdir -p "${FAKE_HOMES}/demo/projects/webapp/.git"
+AGENT_ENFORCER_HOME_ROOT="$FAKE_HOMES" PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+assert_file_exists "cursor AGENTS.md applied to git project" "${FAKE_HOMES}/demo/projects/webapp/AGENTS.md"
+
+# -------------------------------------------------------------------
+echo "Test 16: sync removes managed AGENTS.md when cursor disabled"
+# Seed marker-managed files + one user-owned (no marker) file
+printf '<!-- managed by agent-enforcer -->\nrules\n' > "${FAKE_HOMES}/demo/AGENTS.md"
+printf '<!-- managed by agent-enforcer -->\nrules\n' > "${FAKE_HOMES}/demo/projects/webapp/AGENTS.md"
+mkdir -p "${FAKE_HOMES}/demo/projects/user-owned"
+printf 'my own agents file\n' > "${FAKE_HOMES}/demo/projects/user-owned/AGENTS.md"
+touch "${FAKE_VAR}/cursor-applied"
+# Cursor absent from the response — only claude-code is served now
+install_mock_curl 200 '{"files":{},"assistants":{"claude-code":true,"cursor":false},"bundles":{"claude-code":{"version":"1753751000001","files":{"CLAUDE.md":"https://mock/cc"}}}}'
+
+AGENT_ENFORCER_HOME_ROOT="$FAKE_HOMES" PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+if [[ -f "${FAKE_HOMES}/demo/AGENTS.md" ]]; then
+  _fail "managed home AGENTS.md removed on disable"
+else
+  _pass "managed home AGENTS.md removed on disable"
+fi
+if [[ -f "${FAKE_HOMES}/demo/projects/webapp/AGENTS.md" ]]; then
+  _fail "managed project AGENTS.md removed on disable"
+else
+  _pass "managed project AGENTS.md removed on disable"
+fi
+assert_file_exists "user-owned AGENTS.md preserved" "${FAKE_HOMES}/demo/projects/user-owned/AGENTS.md"
+if [[ -d "${FAKE_VAR}/bundles/cursor" ]]; then
+  _fail "cursor store pruned when absent from response"
+else
+  _pass "cursor store pruned when absent from response"
+fi
+
+# -------------------------------------------------------------------
+echo "Test 17: legacy files-only response still applies claude-code"
+rm -rf "${FAKE_VAR}/bundles" "${FAKE_HOMES}/demo/.claude"
+install_mock_curl 200 '{"files":{"CLAUDE.md":"https://mock/legacy"},"assistants":{"claude-code":true}}'
+AGENT_ENFORCER_HOME_ROOT="$FAKE_HOMES" PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+assert_file_exists "legacy response staged as claude-code" "${FAKE_VAR}/bundles/claude-code/CLAUDE.md"
+assert_file_exists "legacy response applied to home" "${FAKE_HOMES}/demo/.claude/CLAUDE.md"
+
+# -------------------------------------------------------------------
+echo "Test 18: sync request body carries applied_versions and agent_version"
+printf 'claude-code=1753751000000\n' > "${FAKE_VAR}/applied-versions"
+REQUEST_LOG="${TMPDIR_TEST}/request-body.log"
+rm -f "$REQUEST_LOG"
+# Recording curl: captures -d payloads, returns an empty distribution
+cat > "${MOCK_BIN}/curl" <<EOF
+#!/bin/bash
+OUTPUT_FILE=""
+WRITE_OUT=""
+args=("\$@")
+i=0
+while [[ \$i -lt \${#args[@]} ]]; do
+  case "\${args[\$i]}" in
+    -o)  OUTPUT_FILE="\${args[\$((i+1))]}"; i=\$((i+2)) ;;
+    -w)  WRITE_OUT="\${args[\$((i+1))]}"; i=\$((i+2)) ;;
+    -d)  echo "\${args[\$((i+1))]}" >> "${REQUEST_LOG}"; i=\$((i+2)) ;;
+    *)   i=\$((i+1)) ;;
+  esac
+done
+if [[ -n "\$OUTPUT_FILE" ]]; then
+  printf '%s' '{"files":{},"assistants":{}}' > "\$OUTPUT_FILE"
+fi
+if [[ "\$WRITE_OUT" == "%{http_code}" ]]; then
+  printf '200'
+fi
+EOF
+chmod +x "${MOCK_BIN}/curl"
+
+AGENT_ENFORCER_HOME_ROOT="$FAKE_HOMES" PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" sync >/dev/null 2>&1 || true
+REQUEST_BODY=$(cat "$REQUEST_LOG" 2>/dev/null || echo "")
+assert_contains "sync request has applied_versions" '"applied_versions":.*"claude-code": ?"1753751000000"' "$REQUEST_BODY"
+assert_contains "sync request has agent_version" '"agent_version":"1\.0\.0"' "$REQUEST_BODY"
+
+# -------------------------------------------------------------------
+echo "Test 19: status and describe show applied bundle versions"
+printf 'claude-code=1753751000000\ncursor=1753751000000\n' > "${FAKE_VAR}/applied-versions"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" status 2>&1)
+assert_contains "status shows applied claude-code version" "claude-code.*1753751000000" "$OUT"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" describe 2>&1)
+assert_contains "describe shows applied cursor version" "cursor.*1753751000000" "$OUT"
+
+# -------------------------------------------------------------------
+echo "Test 20: platform detection and autostart dispatch"
+# Force Darwin via a mocked uname
+cat > "${MOCK_BIN}/uname" <<'EOF'
+#!/bin/bash
+echo "Darwin"
+EOF
+chmod +x "${MOCK_BIN}/uname"
+# Mock launchctl so the darwin service paths never touch the real system
+cat > "${MOCK_BIN}/launchctl" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+chmod +x "${MOCK_BIN}/launchctl"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" status 2>&1)
+assert_contains "darwin detection sets AGENT_TYPE=MACOS" "Agent Type.*MACOS" "$OUT"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" autostart on 2>&1)
+assert_contains "autostart on dispatches to launchd" "Autostart enabled.*launchd" "$OUT"
+
+# Force Linux via the mocked uname — systemctl path
+cat > "${MOCK_BIN}/uname" <<'EOF'
+#!/bin/bash
+echo "Linux"
+EOF
+chmod +x "${MOCK_BIN}/uname"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" status 2>&1)
+assert_contains "linux detection sets AGENT_TYPE=ROCKY9" "Agent Type.*ROCKY9" "$OUT"
+OUT=$(PATH="${MOCK_BIN}:${PATH}" bash "$PATCHED" autostart off 2>&1)
+assert_contains "autostart off dispatches to systemd" "Autostart disabled.*systemd" "$OUT"
+assert_exit_nonzero "autostart rejects invalid argument" \
+  bash -c "PATH='${MOCK_BIN}:${PATH}' bash '$PATCHED' autostart maybe >/dev/null 2>&1"
+rm -f "${MOCK_BIN}/uname"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

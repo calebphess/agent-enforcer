@@ -14,7 +14,7 @@ Do not skip any of these steps, even for small changes. Branch names should be l
 
 ## Version Management
 
-The canonical project version is in `VERSION` at the repo root. Current: **0.4.0**
+The canonical project version is in `VERSION` at the repo root. Current: **1.0.0**
 
 **On every new feature, ask the user which segment to bump (patch / minor / major), then update all three locations:**
 1. `VERSION` file (single line, e.g. `0.2.1`)
@@ -147,7 +147,8 @@ Current stacks use `RemovalPolicy.DESTROY` and `autoDeleteObjects: true` — dev
 
 ## RPM Package (`rpm/`)
 
-Builds a `noarch` RPM for Rocky Linux 9 / RHEL 9. Current version: **0.4.0**
+Builds a `noarch` RPM for Rocky Linux 9 / RHEL 9. Current version: **1.0.0**
+The same agent script ships for macOS as an unsigned `.pkg` (see `pkg/build-pkg.sh`) — one bash script, runtime `uname` detection (`AGENT_TYPE=ROCKY9|MACOS`, systemd vs launchd, `/home` vs `/Users`).
 
 Install with plain `sudo rpm -i` (no `-vh` needed) — `%post` prints an ASCII banner via `agent-enforcer banner` plus next-step hints. The banner art lives in the agent script as a quoted heredoc; never inline it in the spec (rpm macro-expands `%` in scriptlets). The spec's `%post` message and version file use `%{version}` — no hardcoded version strings.
 
@@ -251,8 +252,11 @@ Any `*.md` upload to the source bucket triggers the Lambda, which reads **all** 
 - `demo/demo-prompt.sh` — interactive-mode wrapper (per-prompt run, live stream, per-run upload)
 - `demo/demo-stream-filter.py` — renders Claude Code stream-json as readable demo output
 - `rpm/SOURCES/agent-enforcer` — main bash script (all CLI commands + daemon loop)
-- `tests/lambda/` — Lambda pytest suites (70 tests: license 18, admin 34, config-generator 6, analysis 4, contact 8)
-- `tests/agent/test_agent.sh` — agent bash test suite (39 tests)
+- `tests/lambda/` — Lambda pytest suites (90 tests: license 22, admin 40, config-generator 16, analysis 4, contact 8)
+- `tests/agent/test_agent.sh` — agent bash test suite (62 tests)
+- `pkg/` — macOS installer build (`build-pkg.sh`, launchd plist, postinstall)
+- `secrets.local.yaml` — git-ignored local secrets (cursor API key, admin creds); push to Secrets Manager via `cdk/scripts/push-local-secrets.sh`
+- `demo/tools/make-nist-demo-pdf.py` — regenerates `demo/enforcement-doc-nist-dev.pdf` (condensed developer-relevant NIST SP 800-53r5 slice) from the full PDF
 
 ## Sales & Legal Documents (`docs/sales/`)
 - `slicksheet.md` — government-facing product slick sheet (two-page, with image placeholders for PDF rendering)

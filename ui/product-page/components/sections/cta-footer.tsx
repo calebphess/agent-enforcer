@@ -4,7 +4,12 @@ import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
 import { useReveal } from '@/hooks/use-scroll-fx'
 
-const COMPAT = ['Claude Code', 'Kiro', 'Cursor', 'GitHub Copilot']
+const COMPAT = [
+  { name: 'Claude Code', supported: true },
+  { name: 'Cursor', supported: true },
+  { name: 'Kiro', supported: false },
+  { name: 'GitHub Copilot', supported: false },
+]
 
 export function CtaFooter() {
   const ref = useReveal<HTMLDivElement>()
@@ -65,10 +70,15 @@ export function CtaFooter() {
             <div className="flex flex-wrap justify-center gap-2">
               {COMPAT.map((c) => (
                 <span
-                  key={c}
-                  className="rounded-full border border-white/12 bg-white/5 px-4 py-1.5 text-xs font-semibold text-paper/90"
+                  key={c.name}
+                  className={
+                    c.supported
+                      ? 'rounded-full border border-gold/40 bg-gold-tint px-4 py-1.5 text-xs font-semibold text-paper/90'
+                      : 'rounded-full border border-white/12 bg-white/5 px-4 py-1.5 text-xs font-semibold text-muted-blue'
+                  }
                 >
-                  {c}
+                  {c.name}
+                  {!c.supported && <span className="ml-1.5 text-[10px] uppercase">later</span>}
                 </span>
               ))}
             </div>

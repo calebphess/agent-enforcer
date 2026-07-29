@@ -15,6 +15,7 @@ import {
   FileText,
   Bot,
   Server,
+  Download,
   RotateCw,
   LogOut,
   Menu,
@@ -69,6 +70,7 @@ const NAV = [
   { href: '/fleet', label: 'Fleet', icon: Server },
   { href: '/documents', label: 'Documents', icon: FileText },
   { href: '/assistants', label: 'Assistants', icon: Bot },
+  { href: '/downloads', label: 'Downloads', icon: Download },
 ]
 
 const FOOTER_TEXT =

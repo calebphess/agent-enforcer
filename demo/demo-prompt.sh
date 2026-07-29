@@ -9,8 +9,10 @@
 # runs/<RUN_ID>/results.md once both have finished.
 #
 # Installed to /usr/local/bin/demo-prompt by the DemoStack interactive-mode
-# user-data, alongside /etc/demo-env (RESULTS_BUCKET, API_KEY_SECRET_ARN)
-# and /etc/demo-role (instance1|instance2).
+# user-data, alongside /etc/demo-env (RESULTS_BUCKET, API_KEY_SECRET_ARN,
+# CURSOR_KEY_SECRET_NAME), /etc/demo-role (instance1|instance2), and
+# /etc/demo-assistant (claude|cursor) — the cursor box runs cursor-agent
+# against the agent-enforcer-managed AGENTS.md instead of Claude Code.
 set -euo pipefail
 
 usage() { echo 'Usage: sudo demo-prompt "<prompt>"' >&2; exit 1; }
@@ -22,6 +24,7 @@ fi
 # shellcheck source=/dev/null
 source /etc/demo-env
 ROLE=$(cat /etc/demo-role)
+ASSISTANT=$(cat /etc/demo-assistant 2>/dev/null || echo claude)
 PROMPT="$*"
 [[ -n "$PROMPT" ]] || usage
 
@@ -35,34 +38,58 @@ mkdir -p "${RUN_DIR}/project" "${RUN_DIR}/output"
 printf '%s' "$PROMPT" > "${RUN_DIR}/prompt.txt"
 chown -R demo:demo "$RUN_DIR"
 
-# API key fetched at run time via the instance role — never persisted to disk
-ANTHROPIC_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$API_KEY_SECRET_ARN" \
-  --query 'SecretString' --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['api-key'])")
-
 echo "============================================================"
-echo "  Agent Enforcer demo — run ${RUN_ID} (${ROLE})"
+echo "  Agent Enforcer demo — run ${RUN_ID} (${ROLE}, ${ASSISTANT})"
 echo "  Run the identical command on the other instance too."
 echo "============================================================"
 echo ""
 
 STREAM_FILE="${RUN_DIR}/output/session-stream.jsonl"
-set +e
-su -s /bin/bash demo -c "export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}'; \
-  cd '${RUN_DIR}/project'; \
-  claude -p \"\$(cat '${RUN_DIR}/prompt.txt')\" --output-format stream-json --verbose --dangerously-skip-permissions" \
-  | tee "$STREAM_FILE" | /usr/local/bin/demo-stream-filter.py
-CLAUDE_STATUS=${PIPESTATUS[0]}
-set -e
 
-if [[ $CLAUDE_STATUS -ne 0 ]]; then
+if [[ "$ASSISTANT" == "cursor" ]]; then
+  # Cursor has no global rules file — materialize the agent-enforcer-managed
+  # AGENTS.md into the run workspace so enforcement binds to this run
+  if [[ -f /home/demo/AGENTS.md ]]; then
+    cp /home/demo/AGENTS.md "${RUN_DIR}/project/AGENTS.md"
+    chown demo:demo "${RUN_DIR}/project/AGENTS.md"
+  fi
+
+  # Cursor User API key fetched at run time — never persisted to disk
+  CURSOR_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$CURSOR_KEY_SECRET_NAME" \
+    --query 'SecretString' --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['api-key'])")
+
+  set +e
+  su -s /bin/bash demo -c "export CURSOR_API_KEY='${CURSOR_API_KEY}'; \
+    cd '${RUN_DIR}/project'; \
+    cursor-agent -p \"\$(cat '${RUN_DIR}/prompt.txt')\" --force" \
+    | tee "$STREAM_FILE"
+  AGENT_STATUS=${PIPESTATUS[0]}
+  set -e
+else
+  # API key fetched at run time via the instance role — never persisted to disk
+  ANTHROPIC_API_KEY=$(aws secretsmanager get-secret-value --secret-id "$API_KEY_SECRET_ARN" \
+    --query 'SecretString' --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['api-key'])")
+
+  set +e
+  su -s /bin/bash demo -c "export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}'; \
+    cd '${RUN_DIR}/project'; \
+    claude -p \"\$(cat '${RUN_DIR}/prompt.txt')\" --output-format stream-json --verbose --dangerously-skip-permissions" \
+    | tee "$STREAM_FILE" | /usr/local/bin/demo-stream-filter.py
+  AGENT_STATUS=${PIPESTATUS[0]}
+  set -e
+fi
+
+if [[ $AGENT_STATUS -ne 0 ]]; then
   echo "" >&2
-  echo "Claude Code exited with status ${CLAUDE_STATUS} — NOT uploading results." >&2
+  echo "${ASSISTANT} exited with status ${AGENT_STATUS} — NOT uploading results." >&2
   echo "Re-run the same command to retry (the workspace is recreated per run)." >&2
-  exit "$CLAUDE_STATUS"
+  exit "$AGENT_STATUS"
 fi
 
 # Synthesize session.json from the final stream 'result' event so the analysis
 # Lambda's token/cost extraction sees the same shape as the auto-run demo.
+# (Cursor output is plain text — the synthesizer yields {} and the token
+# fields below fall back to 0, which the analysis Lambda tolerates.)
 python3 - "$STREAM_FILE" "${RUN_DIR}/output/session.json" <<'PY'
 import json, sys
 last = {}
@@ -75,7 +102,7 @@ with open(sys.argv[1]) as f:
             d = json.loads(line)
         except ValueError:
             continue
-        if d.get('type') == 'result':
+        if isinstance(d, dict) and d.get('type') == 'result':
             last = d
 json.dump(last, open(sys.argv[2], 'w'))
 PY

@@ -64,10 +64,41 @@ export interface Agent {
   created_date: string
   last_used_date: string
   active: boolean
+  /** Bundle version (epoch millis) each assistant last applied on this host. */
+  applied_versions?: Record<string, string>
 }
 
 export type AssistantKey = 'claude-code' | 'kiro' | 'cursor' | 'github-copilot'
 export type AssistantsMap = Record<AssistantKey, boolean>
+
+/** Assistants with a real generation pipeline (build records, bundles, zips). */
+export const GENERATABLE_ASSISTANTS: AssistantKey[] = ['claude-code', 'cursor']
+
+export type DocBuildState = 'current' | 'stale' | 'missing'
+
+export interface BuildStatus {
+  builds: Record<string, { version: string; built_at: string } | null>
+  documents: Array<{ id: string; filename: string; status: Record<string, DocBuildState> }>
+}
+
+export interface InstallerDownload {
+  filename: string
+  platform: 'linux' | 'macos'
+  version: string
+  latest: boolean
+  size: number
+  updated: string
+  url: string
+}
+
+export interface BundleDownload {
+  assistant: string
+  version: string
+  built_at: string
+  latest: boolean
+  filename: string
+  zip_url: string
+}
 
 /** A single generated file inside an assistant's S3 bundle folder. */
 export interface BundleFile {
@@ -195,6 +226,9 @@ let mockAssistants: AssistantsMap = {
   'github-copilot': false,
 }
 
+const MOCK_BUILD_VERSION = '1753751000000'
+const MOCK_PREV_BUILD_VERSION = '1753664600000'
+
 // Larger fleet so paging + filtering on the Fleet page are meaningful.
 function seedAgents(): Agent[] {
   const types = ['ROCKY9', 'UBUNTU22', 'AMZN2023', 'RHEL9']
@@ -218,6 +252,10 @@ function seedAgents(): Agent[] {
       created_date: new Date(Date.now() - daysAgoCreated * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
       last_used_date: new Date(Date.now() - daysAgoUsed * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
       active: i % 5 !== 0, // ~80% active
+      applied_versions:
+        i % 3 === 0
+          ? { 'claude-code': MOCK_BUILD_VERSION, cursor: MOCK_BUILD_VERSION }
+          : { 'claude-code': MOCK_BUILD_VERSION },
     }
   })
 }
@@ -526,6 +564,16 @@ Runs a full policy scan across the current workspace.
 
 Returns a checklist of passed and failed policy rules.`,
   },
+  cursor: {
+    'AGENTS.md': `<!-- managed by agent-enforcer -->
+# Enforcement Rules
+
+- Use parameterized queries for all SQL.
+- Never print, log, or commit secrets or credentials.
+- Validate all external input at the boundary.
+- Run containers as a non-root user.
+- Type-hint all new Python functions; docstring every public API.`,
+  },
 }
 
 function bundleFilesFor(assistant: AssistantKey): BundleFile[] {
@@ -563,4 +611,88 @@ export async function getBundleFile(
   return request<{ path: string; content: string }>(
     `/admin/assistants/${assistant}/bundle/${encodeURIComponent(path)}`,
   )
+}
+
+// ----------------------------------------------------------------------------
+// Build status (per-document inclusion in the latest bundle builds)
+// ----------------------------------------------------------------------------
+
+export async function getBuildStatus(): Promise<BuildStatus> {
+  if (USE_MOCKS) {
+    await latency()
+    const docs = mockDocuments.filter((d) => !d.deleted)
+    return {
+      builds: {
+        'claude-code': { version: MOCK_BUILD_VERSION, built_at: '2026-07-28T22:00:00Z' },
+        cursor: null,
+      },
+      documents: docs.map((d, i) => ({
+        id: d.id,
+        filename: d.filename,
+        status: {
+          'claude-code': i === 0 ? 'current' : 'stale',
+          cursor: 'missing',
+        },
+      })),
+    }
+  }
+  return request<BuildStatus>('/admin/build-status')
+}
+
+// ----------------------------------------------------------------------------
+// Downloads (installers + generated agent packages)
+// ----------------------------------------------------------------------------
+
+export async function getInstallerDownloads(): Promise<{ installers: InstallerDownload[] }> {
+  if (USE_MOCKS) {
+    await latency()
+    return {
+      installers: [
+        {
+          filename: 'agent-enforcer.rpm', platform: 'linux', version: 'latest', latest: true,
+          size: 14_336, updated: '2026-07-28T21:40:00Z',
+          url: 'https://agent-enforcer-rpm.s3.amazonaws.com/installers/latest/agent-enforcer.rpm',
+        },
+        {
+          filename: 'agent-enforcer.pkg', platform: 'macos', version: 'latest', latest: true,
+          size: 18_204, updated: '2026-07-28T21:40:00Z',
+          url: 'https://agent-enforcer-rpm.s3.amazonaws.com/installers/latest/agent-enforcer.pkg',
+        },
+        {
+          filename: 'agent-enforcer-1.0.0-1.el9.noarch.rpm', platform: 'linux', version: '1.0.0',
+          latest: false, size: 14_336, updated: '2026-07-28T21:40:00Z',
+          url: 'https://agent-enforcer-rpm.s3.amazonaws.com/installers/1.0.0/agent-enforcer-1.0.0-1.el9.noarch.rpm',
+        },
+        {
+          filename: 'agent-enforcer-0.4.0-1.el9.noarch.rpm', platform: 'linux', version: '0.4.0',
+          latest: false, size: 13_990, updated: '2026-07-20T10:00:00Z',
+          url: 'https://agent-enforcer-rpm.s3.amazonaws.com/installers/0.4.0/agent-enforcer-0.4.0-1.el9.noarch.rpm',
+        },
+      ],
+    }
+  }
+  return request<{ installers: InstallerDownload[] }>('/admin/downloads/installers')
+}
+
+export async function getBundleDownloads(): Promise<{ bundles: BundleDownload[] }> {
+  if (USE_MOCKS) {
+    await latency()
+    return {
+      bundles: [
+        {
+          assistant: 'claude-code', version: MOCK_BUILD_VERSION, built_at: '2026-07-28T22:00:00Z',
+          latest: true, filename: `claude-code.${MOCK_BUILD_VERSION}.zip`, zip_url: MOCK_UPLOAD_URL,
+        },
+        {
+          assistant: 'cursor', version: MOCK_BUILD_VERSION, built_at: '2026-07-28T22:00:00Z',
+          latest: true, filename: `cursor.${MOCK_BUILD_VERSION}.zip`, zip_url: MOCK_UPLOAD_URL,
+        },
+        {
+          assistant: 'claude-code', version: MOCK_PREV_BUILD_VERSION, built_at: '2026-07-27T22:00:00Z',
+          latest: false, filename: `claude-code.${MOCK_PREV_BUILD_VERSION}.zip`, zip_url: MOCK_UPLOAD_URL,
+        },
+      ],
+    }
+  }
+  return request<{ bundles: BundleDownload[] }>('/admin/downloads/bundles')
 }

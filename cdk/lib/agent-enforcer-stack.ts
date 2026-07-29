@@ -75,6 +75,17 @@ export class AgentEnforcerStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Bundle build history — one item per assistant per generation run.
+    // Sort key is the epoch-millis version string, so "latest build" is a
+    // Query with ScanIndexForward=false, Limit=1.
+    const buildsTable = new dynamodb.Table(this, 'BuildsTable', {
+      tableName: 'AgentEnforcerBuilds',
+      partitionKey: { name: 'assistant', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'version', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // -------------------------------------------------------------------------
     // Secrets Manager — Config
     // -------------------------------------------------------------------------
@@ -112,6 +123,7 @@ export class AgentEnforcerStack extends cdk.Stack {
         DIST_BUCKET: distBucket.bucketName,
         CONFIG_SECRET_ARN: configSecret.secretArn,
         DOCUMENTS_TABLE: documentsTable.tableName,
+        BUILDS_TABLE: buildsTable.tableName,
       },
     });
 
@@ -120,6 +132,8 @@ export class AgentEnforcerStack extends cdk.Stack {
     configSecret.grantRead(licenseFn);
     // Sync response includes the per-assistant toggles for `agent-enforcer describe`
     documentsTable.grantReadData(licenseFn);
+    // Sync reports each bundle's build version alongside its presigned URLs
+    buildsTable.grantReadData(licenseFn);
 
     // HTTP API v2 — cheaper than REST API, built-in CORS
     const httpApi = new apigwv2.HttpApi(this, 'LicenseApi', {
@@ -168,17 +182,52 @@ export class AgentEnforcerStack extends cdk.Stack {
     // Config Generator Lambda
     // -------------------------------------------------------------------------
 
+    // pypdf (PDF text extraction) has to be vendored into the asset — local
+    // pip bundling first, Docker fallback, mirroring the UI build pattern.
+    const generatorDir = path.join(__dirname, 'lambda/config-generator');
+    const generatorCode = lambda.Code.fromAsset(generatorDir, {
+      exclude: ['__pycache__'],
+      bundling: {
+        image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+        command: [
+          'bash', '-c',
+          'pip install -r requirements.txt -t /asset-output && cp index.py /asset-output/',
+        ],
+        local: {
+          tryBundle(outputDir: string): boolean {
+            try {
+              execSync(
+                `pip3 install -r requirements.txt -t '${outputDir}' --quiet`,
+                { cwd: generatorDir, stdio: 'inherit' },
+              );
+              fs.copyFileSync(
+                path.join(generatorDir, 'index.py'),
+                path.join(outputDir, 'index.py'),
+              );
+              return true;
+            } catch (err) {
+              console.warn(`Local config-generator bundling failed, falling back to Docker: ${err}`);
+              return false;
+            }
+          },
+        },
+      },
+    });
+
     const configGeneratorFn = new lambda.Function(this, 'ConfigGenerator', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'lambda/config-generator')),
-      timeout: cdk.Duration.minutes(5),
-      memorySize: 512,
+      code: generatorCode,
+      // Large-PDF distillation is a map-reduce over many Bedrock calls
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 1024,
       environment: {
         DIST_BUCKET: distBucket.bucketName,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+        BEDROCK_HAIKU_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         AWS_ACCOUNT_REGION: this.region,
         DOCUMENTS_TABLE: documentsTable.tableName,
+        BUILDS_TABLE: buildsTable.tableName,
       },
     });
 
@@ -187,6 +236,8 @@ export class AgentEnforcerStack extends cdk.Stack {
     // Reads SETTINGS for the per-assistant toggle; writes registry records
     // for docs uploaded directly to S3 (aws s3 cp)
     documentsTable.grantReadWriteData(configGeneratorFn);
+    // Records what went into every bundle build
+    buildsTable.grantReadWriteData(configGeneratorFn);
     // Cross-region inference profiles route across multiple AWS regions,
     // so the resource must be '*' — there's no single-region ARN to scope to.
     configGeneratorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -230,6 +281,8 @@ export class AgentEnforcerStack extends cdk.Stack {
         SOURCE_BUCKET: sourceBucket.bucketName,
         DIST_BUCKET: distBucket.bucketName,
         CONFIG_SECRET_ARN: configSecret.secretArn,
+        BUILDS_TABLE: buildsTable.tableName,
+        INSTALLER_BUCKET: 'agent-enforcer-rpm',
       },
     });
 
@@ -243,8 +296,12 @@ export class AgentEnforcerStack extends cdk.Stack {
     sourceBucket.grantPut(adminFn);
     sourceBucket.grantDelete(adminFn);
     sourceBucket.grantRead(adminFn);
-    // Bundle viewer lists + reads generated configs
+    // Bundle viewer lists + reads generated configs; downloads presign zips
     distBucket.grantRead(adminFn);
+    // Build-status compares doc ETags against build records
+    buildsTable.grantReadData(adminFn);
+    // Installers grid lists the public RPM bucket (pre-existing, not stack-managed)
+    s3.Bucket.fromBucketName(this, 'InstallerBucket', 'agent-enforcer-rpm').grantRead(adminFn);
 
     const adminIntegration = new apigwv2int.HttpLambdaIntegration('AdminIntegration', adminFn);
     const adminRoutes: Record<string, apigwv2.HttpMethod[]> = {
@@ -260,6 +317,9 @@ export class AgentEnforcerStack extends cdk.Stack {
       '/admin/assistants/{assistant}/bundle': [apigwv2.HttpMethod.GET],
       // Greedy — bundle paths nest (skills/foo.md); the Lambda unquotes
       '/admin/assistants/{assistant}/bundle/{path+}': [apigwv2.HttpMethod.GET],
+      '/admin/build-status': [apigwv2.HttpMethod.GET],
+      '/admin/downloads/installers': [apigwv2.HttpMethod.GET],
+      '/admin/downloads/bundles': [apigwv2.HttpMethod.GET],
     };
     for (const [routePath, methods] of Object.entries(adminRoutes)) {
       httpApi.addRoutes({ path: routePath, methods, integration: adminIntegration });
@@ -426,7 +486,7 @@ export class AgentEnforcerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DocumentsTableName', { value: documentsTable.tableName });
     new cdk.CfnOutput(this, 'UiUrl', {
       value: uiDomain ? `https://${uiDomain}` : `http://ui.${internalDomain}`,
-      description: 'Admin console URL (default login admin/password — override in the config secret)',
+      description: 'Admin console URL (credentials come from the config secret — see cdk/scripts/push-local-secrets.sh)',
     });
     new cdk.CfnOutput(this, 'UiWebsiteEndpoint', {
       value: uiBucket.bucketWebsiteUrl,

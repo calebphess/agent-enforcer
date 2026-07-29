@@ -17,6 +17,9 @@ Serves the /admin/* routes of the HTTP API for the static admin UI:
   PUT    /admin/assistants                  — update toggles
   GET    /admin/assistants/{assistant}/bundle          — list generated bundle files
   GET    /admin/assistants/{assistant}/bundle/{path+}  — read one bundle file
+  GET    /admin/build-status                — per-doc inclusion in latest builds
+  GET    /admin/downloads/installers        — RPM/pkg installers (public bucket)
+  GET    /admin/downloads/bundles           — bundle zips per build, presigned
 
 Auth: admin_username/admin_password come from the config secret, defaulting to
 admin/password when the keys are absent (the deployed secret never picks up
@@ -41,6 +44,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource('dynamodb')
@@ -52,6 +56,11 @@ TOKEN_TTL = 43200           # 12 hours
 SETTINGS_ID = 'SETTINGS'
 KNOWN_ASSISTANTS = ('claude-code', 'kiro', 'cursor', 'github-copilot')
 DEFAULT_ASSISTANTS = {name: (name == 'claude-code') for name in KNOWN_ASSISTANTS}
+
+# Assistants with a working generation pipeline (build records + bundle zips)
+GENERATABLE_ASSISTANTS = ('claude-code', 'cursor')
+
+DOCUMENT_EXTENSIONS = ('.md', '.pdf')
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -97,6 +106,12 @@ def handler(event: dict, context: Any) -> dict:
         return _bundle_list(params.get('assistant', ''))
     if route == 'GET /admin/assistants/{assistant}/bundle/{path+}':
         return _bundle_file(params.get('assistant', ''), params.get('path', ''))
+    if route == 'GET /admin/build-status':
+        return _build_status()
+    if route == 'GET /admin/downloads/installers':
+        return _downloads_installers()
+    if route == 'GET /admin/downloads/bundles':
+        return _downloads_bundles()
 
     return _resp(404, {'error': f'Unknown route: {route}'})
 
@@ -213,8 +228,8 @@ def _create_document(body: dict, username: str) -> dict:
 
     if not name:
         return _resp(400, {'error': 'name is required'})
-    if not filename or filename.startswith('.') or not filename.lower().endswith('.md'):
-        return _resp(400, {'error': 'filename must be a .md file'})
+    if not filename or filename.startswith('.') or not filename.lower().endswith(DOCUMENT_EXTENSIONS):
+        return _resp(400, {'error': 'filename must be a .md or .pdf file'})
 
     for existing in _scan_documents():
         if existing.get('filename') == filename and not existing.get('deleted'):
@@ -380,6 +395,7 @@ def _agents() -> dict:
                 'created_date': item.get('created_date', ''),
                 'last_used_date': item.get('last_used_date', ''),
                 'active': bool(item.get('active', False)),
+                'applied_versions': _clean(item.get('applied_versions') or {}),
             })
         if 'LastEvaluatedKey' not in page:
             break
@@ -496,6 +512,153 @@ def _bundle_file(assistant: str, file_path: str) -> dict:
         return _resp(404, {'error': 'Bundle file not found'})
     content = obj['Body'].read().decode('utf-8', errors='replace')
     return _resp(200, {'path': file_path, 'content': content})
+
+
+# ---------------------------------------------------------------------------
+# Build status + downloads
+# ---------------------------------------------------------------------------
+
+def _latest_builds() -> dict:
+    """Newest build record per generatable assistant (None when never built)."""
+    table_name = os.environ.get('BUILDS_TABLE')
+    builds = {}
+    for assistant in GENERATABLE_ASSISTANTS:
+        builds[assistant] = None
+        if not table_name:
+            continue
+        try:
+            resp = dynamodb.Table(table_name).query(
+                KeyConditionExpression=Key('assistant').eq(assistant),
+                ScanIndexForward=False,
+                Limit=1,
+            )
+            items = resp.get('Items', [])
+            if items:
+                builds[assistant] = items[0]
+        except Exception as e:
+            print(f"Warning: could not read latest build for {assistant}: {e}")
+    return builds
+
+
+def _build_status() -> dict:
+    """Per-document, per-assistant: is the doc's current content in the latest build?
+
+    current = latest build includes this doc at its current ETag
+    stale   = included, but the doc changed since (ETag differs)
+    missing = not in the latest build at all (or no build exists)
+    """
+    source_bucket = os.environ['SOURCE_BUCKET']
+    etags = {}
+    paginator = s3_client.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=source_bucket):
+        for obj in page.get('Contents', []):
+            if obj['Key'].lower().endswith(DOCUMENT_EXTENSIONS):
+                etags[obj['Key']] = obj.get('ETag', '').strip('"')
+
+    latest = _latest_builds()
+    build_docs = {}
+    builds_out = {}
+    for assistant, record in latest.items():
+        if record:
+            build_docs[assistant] = {d['key']: d.get('etag', '') for d in record.get('docs', [])}
+            builds_out[assistant] = {
+                'version': str(record.get('version', '')),
+                'built_at': record.get('built_at', ''),
+            }
+        else:
+            build_docs[assistant] = {}
+            builds_out[assistant] = None
+
+    documents = []
+    for item in _scan_documents():
+        if item.get('deleted'):
+            continue
+        filename = item.get('filename', '')
+        status = {}
+        for assistant in GENERATABLE_ASSISTANTS:
+            included = build_docs[assistant]
+            if filename not in included:
+                status[assistant] = 'missing'
+            elif etags.get(filename) and included[filename] == etags[filename]:
+                status[assistant] = 'current'
+            else:
+                status[assistant] = 'stale'
+        documents.append({'id': item.get('id', ''), 'filename': filename, 'status': status})
+
+    return _resp(200, {'builds': builds_out, 'documents': documents})
+
+
+def _downloads_installers() -> dict:
+    """Installer artifacts from the public RPM bucket's installers/ prefix.
+
+    latest/ keys are the stable URLs; versioned dirs hold the history."""
+    bucket = os.environ.get('INSTALLER_BUCKET', '')
+    if not bucket:
+        return _resp(200, {'installers': []})
+
+    installers = []
+    paginator = s3_client.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=bucket, Prefix='installers/'):
+        for obj in page.get('Contents', []):
+            key = obj['Key']
+            parts = key.split('/')
+            if len(parts) != 3 or not parts[2]:
+                continue
+            _, version, filename = parts
+            ext = os.path.splitext(filename)[1].lstrip('.').lower()
+            platform = {'rpm': 'linux', 'pkg': 'macos'}.get(ext)
+            if not platform:
+                continue
+            installers.append({
+                'filename': filename,
+                'platform': platform,
+                'version': version,
+                'latest': version == 'latest',
+                'size': int(obj['Size']),
+                'updated': obj['LastModified'].strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'url': f'https://{bucket}.s3.amazonaws.com/{key}',
+            })
+
+    installers.sort(key=lambda i: (not i['latest'], i['version']), reverse=False)
+    installers.sort(key=lambda i: i['updated'], reverse=True)
+    installers.sort(key=lambda i: not i['latest'])
+    return _resp(200, {'installers': installers})
+
+
+def _downloads_bundles() -> dict:
+    """All bundle builds per assistant, newest first, with presigned zip URLs."""
+    table_name = os.environ.get('BUILDS_TABLE')
+    dist_bucket = os.environ['DIST_BUCKET']
+    bundles = []
+    if table_name:
+        for assistant in GENERATABLE_ASSISTANTS:
+            try:
+                resp = dynamodb.Table(table_name).query(
+                    KeyConditionExpression=Key('assistant').eq(assistant),
+                    ScanIndexForward=False,
+                )
+                items = resp.get('Items', [])
+            except Exception as e:
+                print(f"Warning: could not list builds for {assistant}: {e}")
+                items = []
+            for i, record in enumerate(items):
+                zip_key = record.get('zip_key', '')
+                if not zip_key:
+                    continue
+                bundles.append({
+                    'assistant': assistant,
+                    'version': str(record.get('version', '')),
+                    'built_at': record.get('built_at', ''),
+                    'latest': i == 0,
+                    'filename': os.path.basename(zip_key),
+                    'zip_url': s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': dist_bucket, 'Key': zip_key},
+                        ExpiresIn=PRESIGNED_EXPIRY,
+                    ),
+                })
+    bundles.sort(key=lambda b: b['version'], reverse=True)
+    return _resp(200, {'bundles': bundles})
 
 
 # ---------------------------------------------------------------------------

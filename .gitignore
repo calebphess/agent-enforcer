@@ -1,6 +1,7 @@
 # CDK build artifacts
 cdk/cdk.out/
 cdk/node_modules/
+cdk/dist/
 
 # RPM build output
 rpm/RPMS/
@@ -20,3 +21,10 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Local dev secrets (pushed to Secrets Manager via cdk/scripts/push-local-secrets.sh)
+secrets.local.yaml
+
+# macOS pkg build output
+pkg/dist/
+pkg/root/

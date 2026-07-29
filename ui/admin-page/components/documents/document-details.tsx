@@ -13,10 +13,27 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { StatusPill } from '@/components/data-cells'
 import { fullTimestamp } from '@/lib/time'
-import type { EnforcementDocument } from '@/lib/api'
+import {
+  GENERATABLE_ASSISTANTS,
+  type BuildStatus,
+  type DocBuildState,
+  type EnforcementDocument,
+} from '@/lib/api'
+
+const STATE_TONE: Record<DocBuildState, 'gold' | 'danger' | 'muted'> = {
+  current: 'gold',
+  stale: 'danger',
+  missing: 'muted',
+}
+const STATE_LABEL: Record<DocBuildState, string> = {
+  current: 'In latest build',
+  stale: 'Changed since last build',
+  missing: 'Not included',
+}
 
 export function DocumentDetails({
   doc,
+  buildStatus,
   onOpenChange,
   onDownload,
   onEdit,
@@ -24,6 +41,7 @@ export function DocumentDetails({
   downloading,
 }: {
   doc: EnforcementDocument | null
+  buildStatus?: BuildStatus
   onOpenChange: (open: boolean) => void
   onDownload: (doc: EnforcementDocument) => void
   onEdit: (doc: EnforcementDocument) => void
@@ -31,6 +49,7 @@ export function DocumentDetails({
   downloading?: boolean
 }) {
   const deleted = !!doc?.deleted
+  const docStatus = buildStatus?.documents.find((d) => d.filename === doc?.filename)?.status
 
   return (
     <Sheet open={!!doc} onOpenChange={onOpenChange}>
@@ -79,6 +98,29 @@ export function DocumentDetails({
               {deleted && (
                 <DetailRow label="Deleted">
                   <span className="text-sm text-danger">{fullTimestamp(doc.deleted)}</span>
+                </DetailRow>
+              )}
+              {!deleted && (
+                <DetailRow label="Bundle inclusion">
+                  {GENERATABLE_ASSISTANTS.map((a) => {
+                    const build = buildStatus?.builds?.[a]
+                    if (!build) {
+                      return (
+                        <span key={a} className="text-xs text-muted-foreground">
+                          {a}: no build yet
+                        </span>
+                      )
+                    }
+                    const state: DocBuildState = docStatus?.[a] ?? 'missing'
+                    return (
+                      <span key={a} className="flex items-center gap-2">
+                        <StatusPill tone={STATE_TONE[state]}>{STATE_LABEL[state]}</StatusPill>
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {a} v{build.version}
+                        </span>
+                      </span>
+                    )
+                  })}
                 </DetailRow>
               )}
             </dl>

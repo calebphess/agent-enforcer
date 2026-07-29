@@ -11,6 +11,7 @@ const LINKS = [
   { href: '#value', label: 'Value' },
   { href: '#proposal', label: 'Proposal' },
   { href: '#pricing', label: 'Pricing' },
+  { href: '#downloads', label: 'Downloads' },
 ]
 
 export function SiteNav() {

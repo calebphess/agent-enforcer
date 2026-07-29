@@ -1,1 +1,2 @@
-# boto3 is provided by the Lambda runtime — no additional deps needed
+# boto3 is provided by the Lambda runtime
+pypdf>=4

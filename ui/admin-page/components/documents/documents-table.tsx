@@ -19,17 +19,37 @@ import {
   EmptyTitle,
   EmptyDescription,
 } from '@/components/ui/empty'
-import { getDownloadUrl, ApiError, type EnforcementDocument } from '@/lib/api'
+import {
+  getDownloadUrl,
+  ApiError,
+  GENERATABLE_ASSISTANTS,
+  type BuildStatus,
+  type DocBuildState,
+  type EnforcementDocument,
+} from '@/lib/api'
 
 // Width reserved for the always-visible Name column.
 const PRIMARY_MIN_WIDTH = 260
 // Optional columns ordered highest → lowest priority (last drops first as the
 // grid gets thinner). Widths include cell padding so nothing overflows.
 const RESPONSIVE_COLUMNS = [
+  { key: 'inclusion', minWidth: 210 },
   { key: 'status', minWidth: 170 },
   { key: 'version', minWidth: 150 },
   { key: 'updated', minWidth: 200 },
 ]
+
+const ASSISTANT_SHORT: Record<string, string> = { 'claude-code': 'CC', cursor: 'CU' }
+const STATE_TONE: Record<DocBuildState, 'gold' | 'danger' | 'muted'> = {
+  current: 'gold',
+  stale: 'danger',
+  missing: 'muted',
+}
+const STATE_LABEL: Record<DocBuildState, string> = {
+  current: 'In latest',
+  stale: 'Stale',
+  missing: 'Not included',
+}
 // Columns hidden by default; users can re-enable them via the column menu.
 const ALWAYS_HIDDEN = {
   description: false,
@@ -41,17 +61,25 @@ const ALWAYS_HIDDEN = {
 export function DocumentsTable({
   documents,
   loading,
+  buildStatus,
   onEdit,
   onDelete,
 }: {
   documents?: EnforcementDocument[]
   loading: boolean
+  buildStatus?: BuildStatus
   onEdit: (doc: EnforcementDocument) => void
   onDelete: (doc: EnforcementDocument) => void
 }) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [detailsDoc, setDetailsDoc] = useState<EnforcementDocument | null>(null)
   const isMobile = useIsMobile()
+
+  const statusByFilename = useMemo(() => {
+    const map: Record<string, Record<string, DocBuildState>> = {}
+    for (const d of buildStatus?.documents ?? []) map[d.filename] = d.status
+    return map
+  }, [buildStatus])
 
   // Drop columns based on the width actually available to the grid (not the
   // viewport), keeping Name and dropping the rest from lowest priority up as
@@ -155,8 +183,42 @@ export function DocumentsTable({
             <StatusPill tone="gold">Tracked</StatusPill>
           ),
       },
+      {
+        id: 'inclusion',
+        header: 'In latest packages',
+        size: 190,
+        enableColumnFilter: false,
+        enableSorting: false,
+        accessorFn: (row) =>
+          GENERATABLE_ASSISTANTS.map(
+            (a) => statusByFilename?.[row.filename]?.[a] ?? 'missing',
+          ).join(','),
+        Cell: ({ row }) => {
+          if (row.original.deleted) return <span className="text-muted-foreground">—</span>
+          const status = statusByFilename?.[row.original.filename]
+          return (
+            <span className="flex flex-wrap gap-1.5">
+              {GENERATABLE_ASSISTANTS.map((a) => {
+                if (!buildStatus?.builds?.[a]) return null // assistant never built
+                const state: DocBuildState = status?.[a] ?? 'missing'
+                return (
+                  <StatusPill
+                    key={a}
+                    tone={STATE_TONE[state]}
+                  >
+                    {ASSISTANT_SHORT[a] ?? a} · {STATE_LABEL[state]}
+                  </StatusPill>
+                )
+              })}
+              {GENERATABLE_ASSISTANTS.every((a) => !buildStatus?.builds?.[a]) && (
+                <span className="text-xs text-muted-foreground">No builds yet</span>
+              )}
+            </span>
+          )
+        },
+      },
     ],
-    [],
+    [buildStatus, statusByFilename],
   )
 
   const table = useMaterialReactTable({
@@ -242,6 +304,7 @@ export function DocumentsTable({
 
       <DocumentDetails
         doc={detailsDoc}
+        buildStatus={buildStatus}
         onOpenChange={(o) => !o && setDetailsDoc(null)}
         downloading={!!detailsDoc && downloadingId === detailsDoc.id}
         onDownload={handleDownload}

@@ -69,6 +69,24 @@ export function AgentDetails({
                   {relativeTime(agent.last_used_date)}
                 </span>
               </DetailRow>
+              <DetailRow label="Enforced config versions">
+                {Object.keys(agent.applied_versions ?? {}).length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    Not reported yet — populated after the agent&apos;s next sync.
+                  </span>
+                ) : (
+                  Object.entries(agent.applied_versions ?? {}).map(([name, version]) => (
+                    <span key={name} className="flex items-center gap-2">
+                      <span className="rounded-full bg-soft px-2 py-0.5 font-mono text-xs text-ink">
+                        {name}
+                      </span>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {version || 'unknown'}
+                      </span>
+                    </span>
+                  ))
+                )}
+              </DetailRow>
             </dl>
 
             <SheetFooter className="gap-2 border-t border-line">

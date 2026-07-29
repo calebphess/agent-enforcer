@@ -22,6 +22,7 @@ interface AssistantMeta {
   monogram: string
   description: string
   comingSoon: boolean
+  beta?: boolean
 }
 
 const ASSISTANTS: AssistantMeta[] = [
@@ -33,16 +34,18 @@ const ASSISTANTS: AssistantMeta[] = [
     comingSoon: false,
   },
   {
-    key: 'kiro',
-    name: 'Kiro',
-    monogram: 'KI',
-    description: 'Bundle generation coming soon.',
-    comingSoon: true,
-  },
-  {
     key: 'cursor',
     name: 'Cursor',
     monogram: 'CU',
+    description:
+      'Generates a managed AGENTS.md applied to user homes and their projects. Cursor has no global rules mechanism, so enforcement binds per workspace.',
+    comingSoon: false,
+    beta: true,
+  },
+  {
+    key: 'kiro',
+    name: 'Kiro',
+    monogram: 'KI',
     description: 'Bundle generation coming soon.',
     comingSoon: true,
   },
@@ -119,6 +122,7 @@ export default function AssistantsPage() {
             monogram={a.monogram}
             description={a.description}
             comingSoon={a.comingSoon}
+            beta={a.beta}
             enabled={assistants?.[a.key] ?? false}
             loading={isLoading && !data}
             pending={pending === a.key}

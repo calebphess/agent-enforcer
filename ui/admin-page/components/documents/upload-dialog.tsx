@@ -67,8 +67,9 @@ export function UploadDialog({
 
   function acceptFile(f: File | undefined | null) {
     if (!f) return
-    if (!f.name.toLowerCase().endsWith('.md')) {
-      toast.error('Only Markdown (.md) files are supported.')
+    const lower = f.name.toLowerCase()
+    if (!lower.endsWith('.md') && !lower.endsWith('.pdf')) {
+      toast.error('Only Markdown (.md) and PDF (.pdf) files are supported.')
       return
     }
     setConflict(null)
@@ -130,8 +131,9 @@ export function UploadDialog({
         <DialogHeader>
           <DialogTitle>Upload enforcement document</DialogTitle>
           <DialogDescription>
-            Upload a single Markdown file. It is compiled into an enforcement bundle
-            automatically.
+            Upload a Markdown or PDF file. It is compiled into an enforcement bundle
+            automatically — large PDFs are distilled to their software-development
+            rules first.
           </DialogDescription>
         </DialogHeader>
 
@@ -140,7 +142,7 @@ export function UploadDialog({
           <input
             ref={inputRef}
             type="file"
-            accept=".md,text/markdown"
+            accept=".md,.pdf,text/markdown,application/pdf"
             className="hidden"
             onChange={(e) => acceptFile(e.target.files?.[0])}
           />
@@ -168,7 +170,8 @@ export function UploadDialog({
             >
               <UploadCloud className="size-7 text-gold-dark" aria-hidden />
               <span className="text-sm font-medium text-ink">
-                Drag & drop a <span className="font-mono">.md</span> file
+                Drag & drop a <span className="font-mono">.md</span> or{' '}
+                <span className="font-mono">.pdf</span> file
               </span>
               <span className="text-xs text-muted-foreground">or click to browse</span>
             </button>

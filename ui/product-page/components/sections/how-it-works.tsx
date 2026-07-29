@@ -106,7 +106,7 @@ export function HowItWorks() {
           </div>
           <div className="grid grid-cols-1 gap-px bg-white/6 sm:grid-cols-3">
             <OsTile name="Linux" src="/os/linux.svg" available />
-            <OsTile name="macOS" src="/os/apple.svg" />
+            <OsTile name="macOS" src="/os/apple.svg" available />
             <OsTile name="Windows" src="/os/windows.svg" />
           </div>
         </div>

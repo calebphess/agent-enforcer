@@ -10,14 +10,15 @@ import { DocumentsTable } from '@/components/documents/documents-table'
 import { UploadDialog } from '@/components/documents/upload-dialog'
 import { EditDialog } from '@/components/documents/edit-dialog'
 import { DeleteDialog } from '@/components/documents/delete-dialog'
-import { getDocuments, type EnforcementDocument } from '@/lib/api'
+import { getDocuments, getBuildStatus, type EnforcementDocument } from '@/lib/api'
 
 export default function DocumentsPage() {
   const { data, isLoading, mutate } = useSWR('documents', getDocuments)
+  const { data: buildStatus, mutate: mutateBuildStatus } = useSWR('build-status', getBuildStatus)
 
   const refresh = useCallback(async () => {
-    await mutate()
-  }, [mutate])
+    await Promise.all([mutate(), mutateBuildStatus()])
+  }, [mutate, mutateBuildStatus])
 
   usePageChrome('Documents', refresh)
 
@@ -44,6 +45,7 @@ export default function DocumentsPage() {
       <DocumentsTable
         documents={documents}
         loading={isLoading && !data}
+        buildStatus={buildStatus}
         onEdit={setEditDoc}
         onDelete={setDeleteDoc}
       />

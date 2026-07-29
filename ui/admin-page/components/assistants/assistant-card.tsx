@@ -12,6 +12,7 @@ export function AssistantCard({
   monogram,
   description,
   comingSoon,
+  beta,
   enabled,
   loading,
   pending,
@@ -22,6 +23,7 @@ export function AssistantCard({
   monogram: string
   description: string
   comingSoon: boolean
+  beta?: boolean
   enabled: boolean
   loading: boolean
   pending: boolean
@@ -58,6 +60,14 @@ export function AssistantCard({
             {comingSoon && (
               <span className="rounded-full bg-gold-tint px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-gold-dark">
                 Coming soon
+              </span>
+            )}
+            {beta && !comingSoon && (
+              <span
+                title="Cursor has no global rules mechanism — rules bind at the workspace level via a managed AGENTS.md."
+                className="rounded-full bg-gold-tint px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-gold-dark"
+              >
+                Beta — workspace-level
               </span>
             )}
           </div>

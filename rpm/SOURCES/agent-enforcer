@@ -2,8 +2,10 @@
 # /usr/bin/agent-enforcer
 # Agent Enforcer — AI Configuration Enforcement Agent
 #
-# Syncs AI tool configurations from a central distribution API and applies them
-# to all user ~/.claude/ directories on this host.
+# Syncs AI tool configurations from a central distribution API into a local
+# canonical store (/var/lib/agent-enforcer/bundles/<assistant>/) and applies
+# them to every user home on this host. Runs on Rocky/RHEL 9 (systemd) and
+# macOS (launchd) from the same script.
 #
 # Usage:
 #   sudo agent-enforcer register [--endpoint <url>] [--user-id <id>]
@@ -12,17 +14,93 @@
 #   sudo agent-enforcer configure --endpoint <url>
 #   agent-enforcer status
 #   agent-enforcer sync
-#   agent-enforcer --daemon        (used by systemd service)
+#   sudo agent-enforcer autostart <enable|disable>
+#   agent-enforcer --daemon        (used by systemd / launchd)
 
 set -euo pipefail
 
-readonly AGENT_VERSION="0.4.0"
-readonly AGENT_TYPE="ROCKY9"
+readonly AGENT_VERSION="1.0.0"
 readonly CONFIG_FILE="/etc/agent-enforcer/config"
 readonly LICENSE_FILE="/var/lib/agent-enforcer/license"
 readonly STAGING_DIR="/tmp/agent-enforcer-staging"
 readonly STATE_DIR="/var/lib/agent-enforcer"
 readonly DEFAULT_ENDPOINT="https://alchemistfederal.com/agent-enforcer"
+readonly CURSOR_MARKER="<!-- managed by agent-enforcer -->"
+readonly LAUNCHD_PLIST="/Library/LaunchDaemons/com.alchemist.agent-enforcer.plist"
+
+# ---------------------------------------------------------------------------
+# Platform detection — one script for Rocky/RHEL (systemd) and macOS (launchd)
+# ---------------------------------------------------------------------------
+
+OS_NAME="$(uname -s 2>/dev/null || echo Linux)"
+if [[ "$OS_NAME" == "Darwin" ]]; then
+  AGENT_TYPE="MACOS"
+else
+  AGENT_TYPE="ROCKY9"
+fi
+readonly AGENT_TYPE
+
+# Linux machine-id first (also the seam the test harness patches), then the
+# macOS hardware UUID, then hostname as a last resort
+_machine_id() {
+  local machine_id
+  machine_id=$(cat /etc/machine-id 2>/dev/null || true)
+  if [[ -z "$machine_id" && "$OS_NAME" == "Darwin" ]]; then
+    machine_id=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null \
+      | awk -F'"' '/IOPlatformUUID/{print $4}' || true)
+  fi
+  [[ -z "$machine_id" ]] && machine_id=$(hostname)
+  echo "$machine_id"
+}
+
+# Prints each real user home directory, one per line.
+# AGENT_ENFORCER_HOME_ROOT overrides the search root (tests / containers).
+_home_dirs() {
+  if [[ -n "${AGENT_ENFORCER_HOME_ROOT:-}" ]]; then
+    find "$AGENT_ENFORCER_HOME_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null
+  elif [[ "$OS_NAME" == "Darwin" ]]; then
+    find /Users -maxdepth 1 -mindepth 1 -type d ! -name Shared ! -name Guest 2>/dev/null
+  else
+    find /home -maxdepth 1 -mindepth 1 -type d 2>/dev/null
+  fi
+}
+
+# Prints "uid gid" of a path
+_stat_ug() {
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    stat -f '%u %g' "$1" 2>/dev/null || echo "0 0"
+  else
+    stat -c '%u %g' "$1" 2>/dev/null || echo "0 0"
+  fi
+}
+
+_service_restart() {
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    launchctl kickstart -k "system/com.alchemist.agent-enforcer" 2>/dev/null || true
+  else
+    systemctl restart agent-enforcer 2>/dev/null || true
+  fi
+}
+
+_service_status() {
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    if launchctl print "system/com.alchemist.agent-enforcer" >/dev/null 2>&1; then
+      echo "active"
+    else
+      echo "inactive"
+    fi
+  else
+    systemctl is-active agent-enforcer 2>/dev/null || echo "unknown"
+  fi
+}
+
+_managed_settings_dir() {
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    echo "/Library/Application Support/ClaudeCode"
+  else
+    echo "/etc/claude-code"
+  fi
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -39,10 +117,11 @@ Commands:
   configure             Update the API endpoint without re-registering (requires sudo)
     --endpoint <url>    New API base URL
 
-  status                Show current configuration and last sync time
+  status                Show current configuration, bundle versions, and last sync
   describe              Show enforcement status, enforced assistants, and license summary
   sync                  Force an immediate sync from the enforcement API
-  --daemon              Run as a background daemon (used by systemd)
+  autostart <on|off>    Enable/disable start-on-boot (requires sudo; on|off, enable|disable)
+  --daemon              Run as a background daemon (used by systemd / launchd)
 
 Examples:
   sudo agent-enforcer register
@@ -53,6 +132,7 @@ Examples:
   agent-enforcer status
   sudo agent-enforcer describe
   agent-enforcer sync
+  sudo agent-enforcer autostart off
 EOF
   exit 1
 }
@@ -106,7 +186,7 @@ cmd_register() {
       --old-license-id) old_license_id="$2";  shift 2 ;;
       --old-user-id)    old_user_id="$2";     shift 2 ;;
       --no-prompt)      no_prompt=1;          shift ;;
-      --agent-type)     shift 2 ;;   # accepted but ignored — type is fixed to AGENT_TYPE
+      --agent-type)     shift 2 ;;   # accepted but ignored — type is detected at runtime
       --agent-version)  shift 2 ;;   # accepted but ignored — version is from AGENT_VERSION
       *) echo "Unknown option: $1" >&2; usage ;;
     esac
@@ -144,7 +224,7 @@ cmd_register() {
   fi
 
   local machine_id
-  machine_id=$(cat /etc/machine-id 2>/dev/null || hostname)
+  machine_id=$(_machine_id)
 
   # Build JSON body
   local body
@@ -224,7 +304,7 @@ EOF
   echo "============================================================"
   echo ""
 
-  systemctl restart agent-enforcer 2>/dev/null || true
+  _service_restart
   echo "Service restarted. Run 'agent-enforcer status' to verify."
 }
 
@@ -274,13 +354,67 @@ EOF
   echo "Agent Enforcer configured."
   echo "  Endpoint : ${endpoint}"
   echo ""
-  systemctl restart agent-enforcer 2>/dev/null || true
+  _service_restart
   echo "Service restarted. Run 'agent-enforcer status' to verify."
+}
+
+# ---------------------------------------------------------------------------
+# autostart — start-on-boot toggle (systemd enable / launchd bootstrap)
+# ---------------------------------------------------------------------------
+
+cmd_autostart() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Error: 'autostart' requires sudo." >&2
+    exit 1
+  fi
+
+  local action="${1:-}"
+  case "$action" in
+    on|enable)   action="enable" ;;
+    off|disable) action="disable" ;;
+    *)
+      echo "Error: autostart requires 'on' or 'off' (also accepts enable/disable)." >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    if [[ "$action" == "enable" ]]; then
+      launchctl bootstrap system "$LAUNCHD_PLIST" 2>/dev/null || true
+      launchctl enable "system/com.alchemist.agent-enforcer" 2>/dev/null || true
+      echo "Autostart enabled (launchd daemon loaded)."
+    else
+      launchctl bootout "system/com.alchemist.agent-enforcer" 2>/dev/null || true
+      echo "Autostart disabled (launchd daemon unloaded)."
+      echo "Re-enable with: sudo agent-enforcer autostart on"
+    fi
+  else
+    if [[ "$action" == "enable" ]]; then
+      systemctl enable --now agent-enforcer 2>/dev/null || true
+      echo "Autostart enabled (systemd service enabled)."
+    else
+      systemctl disable --now agent-enforcer 2>/dev/null || true
+      echo "Autostart disabled (systemd service disabled)."
+      echo "Re-enable with: sudo agent-enforcer autostart on"
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
+
+_print_applied_versions() {
+  local indent="${1:-  }"
+  if [[ -r "${STATE_DIR}/applied-versions" && -s "${STATE_DIR}/applied-versions" ]]; then
+    while IFS='=' read -r name version; do
+      [[ -z "$name" ]] && continue
+      printf '%s%-15s: %s\n' "$indent" "$name" "${version:-<unknown>}"
+    done < "${STATE_DIR}/applied-versions"
+  else
+    echo "${indent}(no bundles applied yet)"
+  fi
+}
 
 cmd_status() {
   echo "=== Agent Enforcer Status ==="
@@ -313,6 +447,9 @@ cmd_status() {
   fi
 
   echo ""
+  echo "  Applied bundle versions:"
+  _print_applied_versions "    "
+  echo ""
 
   if [[ -f "${STATE_DIR}/last-sync" ]]; then
     echo "  Last sync      : $(cat "${STATE_DIR}/last-sync")"
@@ -320,9 +457,7 @@ cmd_status() {
     echo "  Last sync      : never"
   fi
 
-  local svc_status
-  svc_status=$(systemctl is-active agent-enforcer 2>/dev/null || echo "unknown")
-  echo "  Service        : ${svc_status}"
+  echo "  Service        : $(_service_status)"
 }
 
 # ---------------------------------------------------------------------------
@@ -356,6 +491,10 @@ cmd_describe() {
   fi
   echo ""
 
+  echo "  Applied bundle versions:"
+  _print_applied_versions "    "
+  echo ""
+
   # License file is root:600 — a plain source as non-root would abort under
   # set -e, so degrade to a sudo hint instead
   if [[ -r "$LICENSE_FILE" ]]; then
@@ -375,15 +514,33 @@ cmd_describe() {
     echo "  Last sync       : never"
   fi
 
-  local svc_status
-  svc_status=$(systemctl is-active agent-enforcer 2>/dev/null || echo "unknown")
-  echo "  Service         : ${svc_status}"
+  echo "  Service         : $(_service_status)"
   echo "============================================================"
 }
 
 # ---------------------------------------------------------------------------
-# sync
+# sync — fetch phase: pull bundles from the API into the canonical local store
 # ---------------------------------------------------------------------------
+
+# Reads applied-versions state into a JSON object string for the sync request
+_applied_versions_json() {
+  if [[ -r "${STATE_DIR}/applied-versions" && -s "${STATE_DIR}/applied-versions" ]]; then
+    python3 -c "
+import sys
+pairs = {}
+with open('${STATE_DIR}/applied-versions') as f:
+    for line in f:
+        line = line.strip()
+        if '=' in line:
+            k, v = line.split('=', 1)
+            pairs[k] = v
+import json
+print(json.dumps(pairs))
+" 2>/dev/null || echo '{}'
+  else
+    echo '{}'
+  fi
+}
 
 do_sync() {
   if [[ ! -f "$LICENSE_FILE" ]]; then
@@ -410,6 +567,10 @@ do_sync() {
     return 1
   fi
 
+  # Report what we have applied so the fleet console can display it
+  local applied_json
+  applied_json=$(_applied_versions_json)
+
   # Call the sync endpoint to get presigned URLs
   local tmp_resp
   tmp_resp=$(mktemp)
@@ -417,10 +578,11 @@ do_sync() {
   http_code=$(curl -s -o "$tmp_resp" -w "%{http_code}" \
     -X POST "${endpoint}/sync" \
     -H "Content-Type: application/json" \
-    -d "{\"license_id\":\"${license_id}\",\"machine_id\":\"${machine_id}\"}" \
+    -d "{\"license_id\":\"${license_id}\",\"machine_id\":\"${machine_id}\",\"agent_version\":\"${AGENT_VERSION}\",\"applied_versions\":${applied_json}}" \
     --max-time 30 2>/dev/null) || {
     rm -f "$tmp_resp"
     echo "$(date -u): sync API unreachable — will retry next cycle" >> "${STATE_DIR}/sync-errors.log"
+    apply_bundles  # offline: re-apply from the local store anyway
     return 0  # soft failure — don't crash the daemon
   }
 
@@ -437,6 +599,7 @@ do_sync() {
   if [[ "$http_code" != "200" ]]; then
     echo "$(date -u): sync failed with HTTP ${http_code} — will retry next cycle" \
       >> "${STATE_DIR}/sync-errors.log"
+    apply_bundles  # transient server trouble: still re-apply local store
     return 0  # treat unknown errors as transient
   fi
 
@@ -456,63 +619,194 @@ for name, enabled in d.items():
     printf '%s\n' "$assistants_state" > "${STATE_DIR}/assistants"
   fi
 
-  # Download each file to staging — abort entirely if any download fails
+  # Normalize the response into per-assistant download manifests:
+  #   assistant<TAB>rel_path<TAB>url<TAB>version
+  # Version comes LAST because it may be empty (legacy servers) and bash
+  # collapses adjacent tab delimiters between fields. Legacy responses carry
+  # only {"files":{...}}, treated as claude-code with no version.
+  local manifest
+  manifest=$(echo "$response_body" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+bundles = d.get('bundles')
+if not isinstance(bundles, dict) or not bundles:
+    files = d.get('files') or {}
+    bundles = {'claude-code': {'version': '', 'files': files}} if files else {}
+for assistant, bundle in bundles.items():
+    version = bundle.get('version') or ''
+    for path, url in (bundle.get('files') or {}).items():
+        print(assistant + '\t' + path + '\t' + url + '\t' + version)
+" 2>/dev/null || true)
+
+  if [[ -z "$manifest" ]]; then
+    echo "$(date -u): no files in distribution — enforcement doc may not have been uploaded yet" \
+      >> "${STATE_DIR}/sync-errors.log"
+    # An empty distribution is authoritative: managed configs must not linger
+    prune_bundles ""
+    apply_bundles
+    return 0
+  fi
+
+  # Download everything to staging — abort entirely if any download fails
   mkdir -p "$STAGING_DIR" "$STATE_DIR"
   rm -rf "${STAGING_DIR:?}"/*
 
-  # Parse {"files":{"path":"url",...}} using python3
   local download_ok=1
-  while IFS=$'\t' read -r rel_path url; do
-    [[ -z "$rel_path" || -z "$url" ]] && continue
+  local synced_assistants=""
+  while IFS=$'\t' read -r assistant rel_path url version; do
+    [[ -z "$assistant" || -z "$rel_path" || -z "$url" ]] && continue
 
-    # Create parent dirs inside staging
-    local dest="${STAGING_DIR}/${rel_path}"
+    local dest="${STAGING_DIR}/${assistant}/${rel_path}"
     mkdir -p "$(dirname "$dest")"
 
     if ! curl -sf -o "$dest" "$url" --max-time 60 2>/dev/null; then
-      echo "$(date -u): failed to download ${rel_path} — aborting sync" \
+      echo "$(date -u): failed to download ${assistant}/${rel_path} — aborting sync" \
         >> "${STATE_DIR}/sync-errors.log"
       rm -rf "${STAGING_DIR:?}"/*
       download_ok=0
       break
     fi
-  done < <(echo "$response_body" | python3 -c "
-import sys, json
-d = json.load(sys.stdin).get('files', {})
-for path, url in d.items():
-    print(path + '\t' + url)
-" 2>/dev/null || true)
+    echo "$version" > "${STAGING_DIR}/${assistant}/.bundle-version"
+    case " $synced_assistants " in
+      *" $assistant "*) ;;
+      *) synced_assistants="$synced_assistants $assistant" ;;
+    esac
+  done <<< "$manifest"
 
   if [[ $download_ok -eq 0 ]]; then
     return 1
   fi
 
-  if [[ -z "$(ls -A "$STAGING_DIR" 2>/dev/null)" ]]; then
-    echo "$(date -u): no files in distribution — enforcement doc may not have been uploaded yet" \
-      >> "${STATE_DIR}/sync-errors.log"
-    return 0
-  fi
+  # Atomic-ish swap into the canonical store, one assistant at a time
+  mkdir -p "${STATE_DIR}/bundles"
+  local a
+  for a in $synced_assistants; do
+    rm -rf "${STATE_DIR}/bundles/${a:?}"
+    mkdir -p "${STATE_DIR}/bundles/${a}"
+    cp -rp "${STAGING_DIR}/${a}/." "${STATE_DIR}/bundles/${a}/"
+  done
+  rm -rf "${STAGING_DIR:?}"/*
 
-  # Apply to each non-system user home directory
-  while IFS= read -r -d '' home_dir; do
-    local claude_dir="${home_dir}/.claude"
-    mkdir -p "$claude_dir"
-    cp -rp "$STAGING_DIR/." "$claude_dir/"
+  # Assistants absent from the response are no longer served — drop their
+  # store dirs so apply removes their managed configs
+  prune_bundles "$synced_assistants"
 
-    local uid gid
-    uid=$(stat -c '%u' "$home_dir" 2>/dev/null || echo "0")
-    gid=$(stat -c '%g' "$home_dir" 2>/dev/null || echo "0")
-    chown -R "${uid}:${gid}" "$claude_dir" 2>/dev/null || true
-  done < <(find /home -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
+  # Record applied versions for status/describe and the next sync report
+  : > "${STATE_DIR}/applied-versions"
+  for a in $synced_assistants; do
+    local v=""
+    [[ -f "${STATE_DIR}/bundles/${a}/.bundle-version" ]] && v=$(cat "${STATE_DIR}/bundles/${a}/.bundle-version")
+    echo "${a}=${v}" >> "${STATE_DIR}/applied-versions"
+  done
 
-  # System-level managed settings for Claude Code
-  mkdir -p /etc/claude-code
-  if [[ -f "${STAGING_DIR}/settings.json" ]]; then
-    cp "${STAGING_DIR}/settings.json" /etc/claude-code/managed-settings.json
-  fi
+  apply_bundles
 
   date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/last-sync"
   echo "$(date -u): sync complete" >> "${STATE_DIR}/sync.log"
+}
+
+# Removes store dirs for assistants not in the keep list (space-separated)
+prune_bundles() {
+  local keep=" $1 "
+  local dir a
+  for dir in "${STATE_DIR}/bundles"/*/; do
+    [[ -d "$dir" ]] || continue
+    a=$(basename "$dir")
+    case "$keep" in
+      *" $a "*) ;;
+      *) rm -rf "${STATE_DIR}/bundles/${a:?}" ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
+# apply — pure-local phase: enforce whatever is in the canonical store.
+# Re-run every daemon cycle even when the API is unreachable, restoring
+# tampered or deleted configs offline.
+# ---------------------------------------------------------------------------
+
+apply_bundles() {
+  apply_claude_code
+  apply_cursor
+}
+
+apply_claude_code() {
+  local store="${STATE_DIR}/bundles/claude-code"
+  if [[ ! -d "$store" ]]; then
+    return 0
+  fi
+
+  local home_dir claude_dir uid gid
+  while IFS= read -r home_dir; do
+    [[ -z "$home_dir" ]] && continue
+    claude_dir="${home_dir}/.claude"
+    mkdir -p "$claude_dir"
+    (cd "$store" && find . -name '.bundle-version' -prune -o -type f -print) | while IFS= read -r f; do
+      f="${f#./}"
+      mkdir -p "$(dirname "${claude_dir}/${f}")"
+      cp -p "${store}/${f}" "${claude_dir}/${f}"
+    done
+
+    read -r uid gid <<< "$(_stat_ug "$home_dir")"
+    chown -R "${uid}:${gid}" "$claude_dir" 2>/dev/null || true
+  done < <(_home_dirs)
+
+  # System-level managed settings for Claude Code
+  local settings_dir
+  settings_dir=$(_managed_settings_dir)
+  if [[ -f "${store}/settings.json" ]]; then
+    mkdir -p "$settings_dir"
+    cp "${store}/settings.json" "${settings_dir}/managed-settings.json"
+  fi
+}
+
+apply_cursor() {
+  local store="${STATE_DIR}/bundles/cursor"
+  local agents_file="${store}/AGENTS.md"
+
+  if [[ -d "$store" && -f "$agents_file" ]]; then
+    local home_dir uid gid
+    while IFS= read -r home_dir; do
+      [[ -z "$home_dir" ]] && continue
+      read -r uid gid <<< "$(_stat_ug "$home_dir")"
+
+      # Home root — binds when the workspace is (under) the home dir
+      _install_cursor_rules "$agents_file" "${home_dir}/AGENTS.md" "$uid" "$gid"
+
+      # Every project (git repo) under the home, searched fresh each cycle —
+      # cursor has no global rules location, so coverage is per-workspace
+      local git_dir project_dir
+      while IFS= read -r git_dir; do
+        project_dir=$(dirname "$git_dir")
+        _install_cursor_rules "$agents_file" "${project_dir}/AGENTS.md" "$uid" "$gid"
+      done < <(find "$home_dir" -maxdepth 3 -name .git -type d 2>/dev/null)
+    done < <(_home_dirs)
+    touch "${STATE_DIR}/cursor-applied"
+  elif [[ -f "${STATE_DIR}/cursor-applied" ]]; then
+    # Cursor no longer served but we applied it before — remove only files we
+    # own (marker-guarded), then drop the flag so this sweep runs exactly once
+    local home_dir target
+    while IFS= read -r home_dir; do
+      [[ -z "$home_dir" ]] && continue
+      while IFS= read -r target; do
+        if head -n1 "$target" 2>/dev/null | grep -qF "$CURSOR_MARKER"; then
+          rm -f "$target"
+        fi
+      done < <(find "$home_dir" -maxdepth 4 -name AGENTS.md -type f 2>/dev/null)
+    done < <(_home_dirs)
+    rm -f "${STATE_DIR}/cursor-applied"
+  fi
+}
+
+# Installs the managed AGENTS.md at a target path unless a user-owned (non-
+# managed) file already exists there — never clobber customer content.
+_install_cursor_rules() {
+  local src="$1" target="$2" uid="$3" gid="$4"
+  if [[ -f "$target" ]] && ! head -n1 "$target" 2>/dev/null | grep -qF "$CURSOR_MARKER"; then
+    return 0
+  fi
+  cp -p "$src" "$target"
+  chown "${uid}:${gid}" "$target" 2>/dev/null || true
 }
 
 cmd_sync() {
@@ -532,7 +826,7 @@ cmd_sync() {
 
 cmd_daemon() {
   mkdir -p "$STATE_DIR"
-  echo "Agent Enforcer daemon started (PID $$, version ${AGENT_VERSION})"
+  echo "Agent Enforcer daemon started (PID $$, version ${AGENT_VERSION}, ${AGENT_TYPE})"
 
   if [[ ! -f "$LICENSE_FILE" ]]; then
     echo "Agent is not registered. Daemon will log this until registration is complete."
@@ -551,12 +845,13 @@ cmd_daemon() {
 }
 
 case "${1:-}" in
-  register)  shift; cmd_register "$@" ;;
-  configure) shift; cmd_configure "$@" ;;
-  status)    cmd_status ;;
-  describe)  cmd_describe ;;
-  sync)      cmd_sync ;;
-  --daemon)  cmd_daemon ;;
-  banner)    cmd_banner ;;
-  *)         usage ;;
+  register)   shift; cmd_register "$@" ;;
+  configure)  shift; cmd_configure "$@" ;;
+  autostart)  shift; cmd_autostart "$@" ;;
+  status)     cmd_status ;;
+  describe)   cmd_describe ;;
+  sync)       cmd_sync ;;
+  --daemon)   cmd_daemon ;;
+  banner)     cmd_banner ;;
+  *)          usage ;;
 esac
